@@ -1,17 +1,13 @@
 # AGENTS.md
 
-## Scope
-This directory is the generic, public-safe `ha-pv-optimization` project.
-
-It contains a reusable Home Assistant / AppDaemon controller for coarse PV and battery power-setpoint optimization.
+This is a reusable Home Assistant / AppDaemon controller for coarse PV and battery power-setpoint optimization.
 
 Do not place installation-specific data here.
 
 ## Privacy and repository boundary
 - Keep entity examples generic.
-- Do not add hostnames, serial numbers, real IPs, real domains, or private Home Assistant paths here.
-- Do not copy support snapshots from a real installation into this project.
-- Site-specific notes belong in the private site repository, not here.
+- Do not add hostnames, serial numbers, real IPs, real domains, or environment-specific Home Assistant paths here.
+- Do not copy support snapshots, credentials, or environment-specific operational data into this project.
 
 ## Project structure
 - `src/ha_pv_optimization/` - installable Python package
