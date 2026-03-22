@@ -1,0 +1,15 @@
+appdaemon:
+  time_zone: UTC
+  latitude: 0
+  longitude: 0
+  elevation: 0
+  plugins:
+    HASS:
+      type: hass
+      ha_url: https://home-assistant.local:8123
+      token: YOUR_LONG_LIVED_ACCESS_TOKEN
+      cert_verify: true
+
+http:
+admin:
+api:

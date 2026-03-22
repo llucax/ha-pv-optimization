@@ -1,0 +1,32 @@
+[Unit]
+Description=pv_optimization AppDaemon (Docker)
+After=docker.service
+Requires=docker.service
+
+[Service]
+TimeoutStartSec=0
+Restart=always
+EnvironmentFile=/srv/pv_optimization/systemd.env
+
+ExecStartPre=-/usr/bin/docker stop %n
+ExecStartPre=-/usr/bin/docker rm %n
+ExecStartPre=-/bin/sh -c '/usr/bin/docker pull "$DOCKER_IMAGE"'
+
+ExecStart=/bin/sh -c '/usr/bin/docker run \
+  --name %n \
+  --network=host \
+  --user "$DOCKER_UID:$DOCKER_GID" \
+  --cap-drop=ALL \
+  --security-opt=no-new-privileges:true \
+  --read-only \
+  --tmpfs /tmp \
+  -e PYTHONPATH=/opt/pv_optimization/src \
+  -v /etc/localtime:/etc/localtime:ro \
+  -v "$CONFIG_DIR":/conf \
+  -v "$PROJECT_DIR":/opt/pv_optimization:ro \
+  "$DOCKER_IMAGE"'
+
+ExecStop=/usr/bin/docker stop %n
+
+[Install]
+WantedBy=multi-user.target

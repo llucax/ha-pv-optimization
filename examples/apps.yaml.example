@@ -1,0 +1,49 @@
+pv_optimization:
+  module: pv_optimization_app
+  class: PvOptimization
+
+  consumption_entity: sensor.house_consumption_power
+  net_consumption_entity: sensor.grid_power
+
+  # The controller expects one live actuator at a time.
+  # A writable `number.*` entity can usually infer the service automatically.
+  power_control_entity: number.battery_output_power_limit
+  actual_power_entity: sensor.battery_output_power
+
+  # Optional battery safety inputs.
+  battery_soc_entity: sensor.battery_soc
+  battery_discharge_limit_entity: number.battery_discharge_limit
+
+  # For non-number domains, set the service explicitly.
+  # power_control_service: input_number/set_value
+  # power_control_value_key: value
+
+  # If the entity exposes numeric min/max/step attributes, the controller can
+  # infer them. Otherwise set these explicitly.
+  # min_output_w: 0
+  # max_output_w: 800
+  # power_step_w: 50
+
+  baseline_load_w: 0
+  control_interval_s: 30
+  consumption_ema_tau_s: 75
+  net_ema_tau_s: 45
+  deadband_w: 50
+  zero_output_threshold_w: 25
+  fast_export_threshold_w: -80
+  import_correction_gain: 0.35
+  export_correction_gain: 1.0
+
+  min_change_w: 50
+  min_write_interval_s: 60
+  max_increase_per_cycle_w: 150
+  max_decrease_per_cycle_w: 300
+  emergency_max_decrease_per_cycle_w: 500
+
+  soc_stop_buffer_pct: 3
+  soc_full_power_buffer_pct: 10
+  soc_min_derate_factor: 0.25
+
+  net_export_negative: true
+  debug_entity_prefix: sensor.pv_optimization
+  dry_run: true
