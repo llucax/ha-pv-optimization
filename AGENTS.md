@@ -1,64 +1,153 @@
 # AGENTS.md
 
-This is a reusable Home Assistant / AppDaemon controller for coarse PV and battery power-setpoint optimization.
+This repository contains a reusable Home Assistant / AppDaemon controller for coarse PV and battery power-setpoint optimization.
 
-Do not place installation-specific data here.
+This file is for coding agents working in this repo.
 
-## Privacy and repository boundary
-- Keep entity examples generic.
-- Do not add hostnames, serial numbers, real IPs, real domains, or environment-specific Home Assistant paths here.
-- Do not copy support snapshots, credentials, or environment-specific operational data into this project.
+## Repository boundary
+- Keep examples generic.
+- Do not add installation-specific data, hostnames, serial numbers, real IPs, real domains, secrets, or local Home Assistant paths.
+- Do not copy support snapshots or operational telemetry into the repo.
 
-## Project structure
-- `src/ha_pv_optimization/` - installable Python package
-- `tests/` - unit tests for the pure controller logic
-- `examples/` - generic AppDaemon and deployment examples
-- `docs/` - generic install, configuration, and assumptions docs
+## Project layout
+- `src/ha_pv_optimization/` - installable package code.
+- `src/ha_pv_optimization/core.py` - pure decision logic; keep most behavior changes here.
+- `src/ha_pv_optimization/appdaemon.py` - AppDaemon wrapper; keep it thin.
+- `tests/` - unit tests for the core logic.
+- `docs/` - assumptions, configuration, and install guidance.
+- `examples/` - generic deployment and AppDaemon examples.
 
 ## Architecture expectations
-- Keep the Home Assistant / AppDaemon wrapper thin.
-- Keep decision logic in `src/ha_pv_optimization/core.py` as pure Python.
-- Document assumptions explicitly when adding new behavior.
-- Prefer configurability over device-specific branching.
-- Preserve safe behavior: clamping, deadbands, slew limits, minimum write intervals, and `dry_run`.
+- Keep control logic pure and deterministic in `src/ha_pv_optimization/core.py`.
+- Keep Home Assistant / AppDaemon integration as translation and I/O glue only.
+- Prefer configuration flags over vendor-specific branching.
+- Preserve safety behavior: clamping, deadbands, slew limits, minimum write intervals, and `dry_run`.
+- Document changed assumptions whenever behavior, topology fit, or config semantics change.
 
-## App assumptions
-- The controller is intentionally opinionated, not universal.
-- It assumes one live power-control actuator at a time.
-- It assumes a numeric actuator that accepts a non-negative power limit.
-- It assumes the actuator affects the same electrical boundary measured by the configured consumption/net sensors.
-- It is designed for coarse control on the order of tens of seconds, not fast inverter EMS loops.
+## Environment and tooling
+- Python version: 3.11+.
+- Package/build backend: Hatchling.
+- Dependency manager and task runner: `uv`.
+- Lint/format tool: Ruff.
+- Test framework: Pytest.
 
-## Development workflow
-Use commands from this directory.
+## Setup commands
+Run commands from the repository root.
 
-### Install dev environment
 ```bash
 uv sync --dev
 ```
 
-### Lint
+## Build commands
+- Build the package: `uv build`
+- Check `pyproject.toml` before changing packaging metadata or build settings.
+
+## Lint and format commands
+- Check lint: `uv run ruff check src tests`
+- Apply safe lint fixes: `uv run ruff check --fix src tests`
+- Format code: `uv run ruff format src tests`
+- Recommended validation after edits:
+
 ```bash
 uv run ruff check src tests
-```
-
-### Format
-```bash
 uv run ruff format src tests
-```
-
-### Tests
-```bash
 uv run pytest
 ```
 
-## Documentation rules
-- Keep `README.md` focused on the generic project.
-- Keep `docs/ASSUMPTIONS.md` current when topology or actuator assumptions change.
-- Keep `docs/CONFIGURATION.md` current when config keys change.
-- Keep `docs/INSTALL.md` current when deployment guidance changes.
+## Test commands
+- Run all tests: `uv run pytest`
+- Run one test file: `uv run pytest tests/test_core.py`
+- Run one test by node id: `uv run pytest tests/test_core.py::test_fast_export_reduces_output_quickly`
+- Run tests matching an expression: `uv run pytest -k fast_export`
+- Run one file with verbose output: `uv run pytest -vv tests/test_core.py`
 
-## Practical guidance
-- Prefer small, targeted edits.
-- Add or update tests when changing controller behavior.
-- If a new feature only works for one vendor or topology, call that out clearly in the docs.
+## When to run what
+- For changes in `src/ha_pv_optimization/core.py`, run at least the focused core test file plus lint.
+- For behavior changes, add or update tests in `tests/test_core.py`.
+- For wrapper/config/docs changes, run lint and the full test suite unless the change is purely documentation.
+- For packaging or import-path changes, run `uv build` in addition to lint/tests.
+
+## Coding style
+- Follow existing Ruff formatting; do not hand-format against it.
+- Use 4-space indentation and keep code Black/Ruff-compatible.
+- Prefer small, targeted edits over broad refactors.
+- Preserve ASCII unless a file already requires Unicode.
+- Use `from __future__ import annotations` in Python modules, matching the existing codebase.
+- Favor clear, direct control flow over clever abstractions.
+
+## Imports
+- Group imports as: standard library, third-party, then local package imports.
+- Separate import groups with a single blank line.
+- Prefer explicit imports over wildcard imports.
+- In package modules, follow the existing relative-import style such as `from .core import ...`.
+- In tests, import the package API explicitly; keep any path bootstrapping minimal and localized.
+
+## Types and data modeling
+- Add type hints to public functions, methods, and important locals when helpful.
+- Prefer builtin generic syntax like `list[str]` and `dict[str, Any]`.
+- Use dataclasses for structured controller config, inputs, and results.
+- Keep state representation simple and explicit; avoid hidden mutation.
+- Use `float | None` and `str | None` rather than `Optional[...]`.
+- Prefer frozen dataclasses when values should not change after construction.
+
+## Naming conventions
+- Use `snake_case` for functions, methods, variables, and config fields.
+- Use `PascalCase` for classes and dataclasses.
+- Keep names descriptive and domain-specific: `net_consumption_w`, `allowed_max_output_w`, `seconds_since_last_write`.
+- Suffix watt values with `_w`, seconds with `_s`, and percentages with `_pct`.
+- Prefix internal helpers with `_` when they are module-private.
+
+## Function design
+- Keep pure calculations in helpers or in `PowerControllerCore.step()`.
+- Make wrapper helpers responsible for parsing Home Assistant/AppDaemon inputs into plain Python values.
+- Prefer returning structured data over ad-hoc tuples or dicts when the shape is stable.
+- Keep methods focused; split parsing, validation, and publishing helpers when wrapper methods grow broad.
+
+## Error handling and validation
+- Raise `ValueError` for invalid or missing configuration that should block startup.
+- Return `None` from parsing helpers when Home Assistant state is unavailable or non-numeric.
+- Catch narrow exceptions only; current code catches `TypeError` and `ValueError` when coercing floats.
+- Do not swallow configuration problems silently.
+- Prefer safe defaults only when they are intentional and documented.
+- Preserve the AppDaemon import fallback so tests and local imports work without the runtime installed.
+
+## Controller-specific guidance
+- Do not move Home Assistant service calls into the core controller.
+- Keep the controller numerically conservative and explain any default change.
+- Maintain quantization, clamp behavior, and slew limiting unless the change explicitly redesigns control behavior.
+- Preserve `dry_run` semantics for safe rollout.
+- If you add a new control input or config key, thread it through config docs, assumptions, examples, and tests.
+
+## Testing guidance
+- Prefer deterministic unit tests with explicit numeric expectations.
+- Cover new controller branches with focused tests instead of relying on manual reasoning.
+- Keep tests fast and isolated; avoid network, filesystem, or AppDaemon runtime dependencies.
+- Follow existing pytest naming style: `test_<behavior>()`.
+- Use one test per behavior branch when possible.
+
+## Documentation expectations
+- Keep `README.md` focused on the generic project, not one installation.
+- Update `docs/ASSUMPTIONS.md` when topology, safety, or actuator assumptions change.
+- Update `docs/CONFIGURATION.md` when config keys or defaults change.
+- Update `docs/INSTALL.md` when deployment guidance changes.
+- Update examples only with generic entity names and generic deployment details.
+
+## Agent workflow guidance
+- Read nearby code before editing; follow the established style in the touched file.
+- Prefer `apply_patch` for small manual edits.
+- Do not revert unrelated user changes in the worktree.
+- Do not add dependencies unless necessary for the task.
+- Do not create commits unless explicitly asked.
+- Mention any commands you ran and any verification you could not run.
+
+## Good change patterns
+- Add a config field in `ControllerConfig`, plumb it from the AppDaemon args parser, document it, and test it.
+- Add pure helper functions for reusable math or parsing logic.
+- Keep debug/status publishing aligned with new result fields when exposing new controller outputs.
+
+## Avoid
+- Installation-specific entity IDs in committed code or docs.
+- Vendor-specific shortcuts without documenting the limitation.
+- Hidden behavior changes in default values.
+- Large refactors that mix formatting, renaming, and logic changes.
+- Moving business logic from the pure core into Home Assistant glue code.
