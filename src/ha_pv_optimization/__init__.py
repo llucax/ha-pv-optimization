@@ -1,4 +1,4 @@
-from .appdaemon import PvOptimization
+from .appdaemon import HaPvOptimization
 from .core import (
     ControllerConfig,
     ControllerInputs,
@@ -11,5 +11,5 @@ __all__ = [
     "ControllerInputs",
     "ControllerResult",
     "PowerControllerCore",
-    "PvOptimization",
+    "HaPvOptimization",
 ]

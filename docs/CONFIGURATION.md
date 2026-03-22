@@ -74,7 +74,7 @@ If either input is missing, the controller skips this protection layer.
 ## Sign convention and debug output
 
 - `net_export_negative` - default `true`; set to `false` if your net sensor uses the opposite sign
-- `debug_entity_prefix` - default `sensor.pv_optimization`
+- `debug_entity_prefix` - default `sensor.ha_pv_optimization`
 - `dry_run` - default `true` in the AppDaemon wrapper for a safer first rollout
 
 ## Example

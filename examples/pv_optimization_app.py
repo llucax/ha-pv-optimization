@@ -1,1 +1,0 @@
-from pv_optimization.appdaemon import PvOptimization

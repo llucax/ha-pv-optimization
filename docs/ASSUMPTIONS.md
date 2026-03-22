@@ -1,6 +1,6 @@
 # Assumptions and Current Limitations
 
-`pv_optimization` is deliberately generic within a narrow control model.
+`ha-pv-optimization` is deliberately generic within a narrow control model.
 
 It is not a universal EMS.
 

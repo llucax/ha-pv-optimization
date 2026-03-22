@@ -1,7 +1,7 @@
 # AGENTS.md
 
 ## Scope
-This directory is the generic, public-safe `pv_optimization` project.
+This directory is the generic, public-safe `ha-pv-optimization` project.
 
 It contains a reusable Home Assistant / AppDaemon controller for coarse PV and battery power-setpoint optimization.
 
@@ -14,14 +14,14 @@ Do not place installation-specific data here.
 - Site-specific notes belong in the private site repository, not here.
 
 ## Project structure
-- `src/pv_optimization/` - installable Python package
+- `src/ha_pv_optimization/` - installable Python package
 - `tests/` - unit tests for the pure controller logic
 - `examples/` - generic AppDaemon and deployment examples
 - `docs/` - generic install, configuration, and assumptions docs
 
 ## Architecture expectations
 - Keep the Home Assistant / AppDaemon wrapper thin.
-- Keep decision logic in `src/pv_optimization/core.py` as pure Python.
+- Keep decision logic in `src/ha_pv_optimization/core.py` as pure Python.
 - Document assumptions explicitly when adding new behavior.
 - Prefer configurability over device-specific branching.
 - Preserve safe behavior: clamping, deadbands, slew limits, minimum write intervals, and `dry_run`.

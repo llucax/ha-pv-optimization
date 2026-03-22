@@ -1,0 +1,1 @@
+from ha_pv_optimization.appdaemon import HaPvOptimization

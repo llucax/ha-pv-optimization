@@ -1,6 +1,6 @@
-pv_optimization:
-  module: pv_optimization_app
-  class: PvOptimization
+ha_pv_optimization:
+  module: ha_pv_optimization_app
+  class: HaPvOptimization
 
   consumption_entity: sensor.house_consumption_power
   net_consumption_entity: sensor.grid_power
@@ -45,5 +45,5 @@ pv_optimization:
   soc_min_derate_factor: 0.25
 
   net_export_negative: true
-  debug_entity_prefix: sensor.pv_optimization
+  debug_entity_prefix: sensor.ha_pv_optimization
   dry_run: true

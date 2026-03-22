@@ -3,7 +3,7 @@ requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
-name = "pv-optimization"
+name = "ha-pv-optimization"
 version = "0.1.0"
 description = "Generic AppDaemon controller for coarse PV and battery power-setpoint optimization in Home Assistant."
 readme = "README.md"
@@ -20,7 +20,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/pv_optimization"]
+packages = ["src/ha_pv_optimization"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

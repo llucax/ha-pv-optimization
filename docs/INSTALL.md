@@ -22,17 +22,17 @@ uv run ruff check src tests
 
 ## Bridge module
 
-Copy `examples/pv_optimization_app.py` into your AppDaemon apps directory.
+Copy `examples/ha_pv_optimization_app.py` into your AppDaemon apps directory.
 
 Example target layout:
 
 ```text
-/srv/pv_optimization/
+/srv/ha-pv-optimization/
   appdaemon.yaml
   systemd.env
   apps/
     apps.yaml
-    pv_optimization_app.py
+    ha_pv_optimization_app.py
 ```
 
 The bridge module keeps AppDaemon's app loading simple while the real code stays in this package.
@@ -43,8 +43,8 @@ Use these files as starting points:
 
 - `examples/appdaemon.yaml.example`
 - `examples/apps.yaml.example`
-- `examples/systemd/pv-optimization.service`
-- `examples/systemd/pv-optimization.env.example`
+- `examples/systemd/ha-pv-optimization.service`
+- `examples/systemd/ha-pv-optimization.env.example`
 
 ## Opinionated Docker + systemd deployment
 
@@ -52,27 +52,27 @@ The example service file assumes:
 
 - AppDaemon runs in Docker
 - the AppDaemon config directory is mounted at `/conf`
-- this project is mounted read-only at `/opt/pv_optimization`
-- `PYTHONPATH=/opt/pv_optimization/src`
+- this project is mounted read-only at `/opt/ha-pv-optimization`
+- `PYTHONPATH=/opt/ha-pv-optimization/src`
 
 Suggested host layout:
 
 ```text
-/srv/pv_optimization/
+/srv/ha-pv-optimization/
   appdaemon.yaml
   systemd.env
   apps/
     apps.yaml
-    pv_optimization_app.py
+    ha_pv_optimization_app.py
 
-/srv/pv_optimization-src/
+/srv/ha-pv-optimization-src/
   pyproject.toml
   src/
   docs/
   examples/
 ```
 
-The service example references `/srv/pv_optimization/systemd.env` for runtime configuration.
+The service example references `/srv/ha-pv-optimization/systemd.env` for runtime configuration.
 
 ## Rollout guidance
 
@@ -80,7 +80,7 @@ Start with `dry_run: true` and verify:
 
 - the configured entities exist
 - the debug entities appear
-- `sensor.pv_optimization_target_limit` tracks your expectation
+- `sensor.ha_pv_optimization_target_limit` tracks your expectation
 - the chosen actuator and measured net power move in the same direction
 
 Only then switch to live writes.

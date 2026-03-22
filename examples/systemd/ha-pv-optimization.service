@@ -1,12 +1,12 @@
 [Unit]
-Description=pv_optimization AppDaemon (Docker)
+Description=ha-pv-optimization AppDaemon (Docker)
 After=docker.service
 Requires=docker.service
 
 [Service]
 TimeoutStartSec=0
 Restart=always
-EnvironmentFile=/srv/pv_optimization/systemd.env
+EnvironmentFile=/srv/ha-pv-optimization/systemd.env
 
 ExecStartPre=-/usr/bin/docker stop %n
 ExecStartPre=-/usr/bin/docker rm %n
@@ -20,10 +20,10 @@ ExecStart=/bin/sh -c '/usr/bin/docker run \
   --security-opt=no-new-privileges:true \
   --read-only \
   --tmpfs /tmp \
-  -e PYTHONPATH=/opt/pv_optimization/src \
+  -e PYTHONPATH=/opt/ha-pv-optimization/src \
   -v /etc/localtime:/etc/localtime:ro \
   -v "$CONFIG_DIR":/conf \
-  -v "$PROJECT_DIR":/opt/pv_optimization:ro \
+  -v "$PROJECT_DIR":/opt/ha-pv-optimization:ro \
   "$DOCKER_IMAGE"'
 
 ExecStop=/usr/bin/docker stop %n

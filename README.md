@@ -1,6 +1,6 @@
-# pv_optimization
+# ha-pv-optimization
 
-`pv_optimization` is a reusable Home Assistant / AppDaemon controller for coarse PV and battery power-setpoint optimization.
+`ha-pv-optimization` is a reusable Home Assistant / AppDaemon controller for coarse PV and battery power-setpoint optimization.
 
 It is designed for installations where Home Assistant exposes:
 
@@ -35,7 +35,7 @@ See `docs/ASSUMPTIONS.md` for the current fit and limitations.
 
 ## Repository layout
 
-- `src/pv_optimization/` - package code
+- `src/ha_pv_optimization/` - package code
 - `tests/` - unit tests for the controller core
 - `examples/` - generic AppDaemon, bridge, and systemd examples
 - `docs/` - generic install, configuration, and assumptions docs
@@ -58,7 +58,7 @@ For deployment guidance, start with:
 
 The package contains the AppDaemon class, but a typical deployment still uses a tiny bridge module in the AppDaemon apps directory.
 
-Example bridge file: `examples/pv_optimization_app.py`
+Example bridge file: `examples/ha_pv_optimization_app.py`
 
 Example app config: `examples/apps.yaml.example`
 

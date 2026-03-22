@@ -85,7 +85,7 @@ class EntityConfig:
     debug_entity_prefix: str
 
 
-class PvOptimization(BaseHass):  # type: ignore[misc]
+class HaPvOptimization(BaseHass):  # type: ignore[misc]
     def initialize(self) -> None:
         self.entities = self._build_entity_config()
         self.config = self._build_controller_config()
@@ -94,7 +94,7 @@ class PvOptimization(BaseHass):  # type: ignore[misc]
         self.last_write_iso: str | None = None
 
         self.log(
-            "Initialized pv_optimization controller"
+            "Initialized ha-pv-optimization controller"
             f" (consumption={self.entities.consumption_entity},"
             f" power_control={self.entities.power_control_entity},"
             f" service={self.entities.power_control_service},"
@@ -137,7 +137,7 @@ class PvOptimization(BaseHass):  # type: ignore[misc]
             power_control_label=_as_non_empty_str(self.args.get("power_control_label"))
             or power_control_entity,
             debug_entity_prefix=_as_non_empty_str(self.args.get("debug_entity_prefix"))
-            or "sensor.pv_optimization",
+            or "sensor.ha_pv_optimization",
         )
 
     def _build_controller_config(self) -> ControllerConfig:
