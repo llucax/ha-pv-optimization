@@ -1,17 +1,29 @@
 [Unit]
+# Human-readable unit description.
 Description=ha-pv-optimization AppDaemon (Docker)
+# Start after Docker is available.
 After=docker.service
+# Require Docker for this unit.
 Requires=docker.service
 
 [Service]
+# Allow systemd to wait indefinitely while Docker starts.
 TimeoutStartSec=0
+# Restart automatically if the container exits.
 Restart=always
+# Load deployment-specific environment variables.
 EnvironmentFile=/srv/ha-pv-optimization/systemd.env
 
+# Stop any old container with the same unit name.
 ExecStartPre=-/usr/bin/docker stop %n
+# Remove any old container with the same unit name.
 ExecStartPre=-/usr/bin/docker rm %n
+# Refresh the configured AppDaemon image before startup.
 ExecStartPre=-/bin/sh -c '/usr/bin/docker pull "$DOCKER_IMAGE"'
 
+# Run AppDaemon in Docker with host networking, a read-only rootfs,
+# the config mounted at /conf, and this project mounted at
+# /opt/ha-pv-optimization so PYTHONPATH can expose src/ to AppDaemon.
 ExecStart=/bin/sh -c '/usr/bin/docker run \
   --name %n \
   --network=host \
@@ -26,7 +38,9 @@ ExecStart=/bin/sh -c '/usr/bin/docker run \
   -v "$PROJECT_DIR":/opt/ha-pv-optimization:ro \
   "$DOCKER_IMAGE"'
 
+# Stop the running container when the unit stops.
 ExecStop=/usr/bin/docker stop %n
 
 [Install]
+# Start this service during the normal multi-user boot target.
 WantedBy=multi-user.target

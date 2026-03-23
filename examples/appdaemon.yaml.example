@@ -1,15 +1,26 @@
 appdaemon:
+  # AppDaemon-wide timezone for schedules and timestamps.
   time_zone: UTC
+  # Optional site latitude for AppDaemon sunrise/sunset helpers.
   latitude: 0
+  # Optional site longitude for AppDaemon sunrise/sunset helpers.
   longitude: 0
+  # Optional site elevation in meters for AppDaemon location helpers.
   elevation: 0
   plugins:
     HASS:
+      # Use the Home Assistant plugin.
       type: hass
+      # Home Assistant base URL reachable from the AppDaemon host/container.
       ha_url: https://home-assistant.local:8123
+      # Long-lived access token created from the Home Assistant UI.
       token: YOUR_LONG_LIVED_ACCESS_TOKEN
+      # Verify the Home Assistant TLS certificate in the generic example.
       cert_verify: true
 
+# Enable AppDaemon's built-in HTTP server.
 http:
+# Enable the AppDaemon admin UI.
 admin:
+# Enable the AppDaemon API.
 api:

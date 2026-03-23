@@ -46,6 +46,62 @@ Use these files as starting points:
 - `examples/systemd/ha-pv-optimization.service`
 - `examples/systemd/ha-pv-optimization.env.example`
 
+## Example file reference
+
+### `examples/appdaemon.yaml.example`
+
+- `appdaemon.time_zone` - AppDaemon-wide timezone used for scheduling and timestamps.
+- `appdaemon.latitude` - optional site latitude for AppDaemon sunrise/sunset helpers.
+- `appdaemon.longitude` - optional site longitude for AppDaemon sunrise/sunset helpers.
+- `appdaemon.elevation` - optional site elevation for AppDaemon sunrise/sunset helpers.
+- `appdaemon.plugins.HASS.type` - AppDaemon plugin type; keep `hass` for Home Assistant.
+- `appdaemon.plugins.HASS.ha_url` - Home Assistant base URL that AppDaemon connects to.
+- `appdaemon.plugins.HASS.token` - Home Assistant long-lived access token.
+- `appdaemon.plugins.HASS.cert_verify` - whether TLS certificates are verified for the Home Assistant endpoint.
+- `http`, `admin`, `api` - enable AppDaemon's built-in HTTP, admin, and API sections using the usual default structure.
+
+### `examples/apps.yaml.example`
+
+Every app-specific key is documented in `docs/CONFIGURATION.md`.
+
+The example includes:
+
+- required AppDaemon loading keys: `module`, `class`
+- required controller entities: `consumption_entity`, `power_control_entity`
+- optional sensors: `net_consumption_entity`, `actual_power_entity`, `battery_soc_entity`, `battery_discharge_limit_entity`
+- optional actuator overrides: `power_control_service`, `power_control_value_key`, `power_control_label`
+- optional output range overrides: `min_output_w`, `max_output_w`, `power_step_w`
+- control tuning and safety settings such as `control_interval_s`, `deadband_w`, `min_write_interval_s`, and `dry_run`
+
+### `examples/ha_pv_optimization_app.py`
+
+- This bridge module has no user-facing config keys.
+- Its only job is to expose the packaged controller to AppDaemon from the apps directory.
+
+### `examples/systemd/ha-pv-optimization.env.example`
+
+- `DOCKER_IMAGE` - AppDaemon image tag to run.
+- `CONFIG_DIR` - host config directory mounted into the container at `/conf`.
+- `PROJECT_DIR` - host checkout of this project mounted into the container.
+- `DOCKER_UID` - uid used to run the container process.
+- `DOCKER_GID` - gid used to run the container process.
+
+### `examples/systemd/ha-pv-optimization.service`
+
+- `EnvironmentFile=/srv/ha-pv-optimization/systemd.env` - loads the deployment-specific values above.
+- `ExecStartPre` cleanup lines stop and remove any previous container with the same name.
+- `ExecStartPre` pull line refreshes the configured AppDaemon image before start.
+- `--name %n` names the container after the systemd unit.
+- `--network=host` lets the container talk to Home Assistant without extra port mapping.
+- `--user "$DOCKER_UID:$DOCKER_GID"` runs as the configured non-root uid/gid.
+- `--cap-drop=ALL` and `--security-opt=no-new-privileges:true` keep privileges tight.
+- `--read-only` and `--tmpfs /tmp` keep the container filesystem mostly immutable.
+- `-e PYTHONPATH=/opt/ha-pv-optimization/src` exposes the package source tree to AppDaemon.
+- `-v /etc/localtime:/etc/localtime:ro` keeps timezone data aligned with the host.
+- `-v "$CONFIG_DIR":/conf` mounts the AppDaemon config directory.
+- `-v "$PROJECT_DIR":/opt/ha-pv-optimization:ro` mounts this project read-only.
+- `ExecStop=/usr/bin/docker stop %n` stops the running container when the unit stops.
+
 ## Opinionated Docker + systemd deployment
 
 The example service file assumes:

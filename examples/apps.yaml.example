@@ -1,49 +1,82 @@
 ha_pv_optimization:
+  # Bridge module AppDaemon imports from the apps directory.
   module: ha_pv_optimization_app
+  # App class instantiated by AppDaemon.
   class: HaPvOptimization
 
+  # Main house/load power sensor in watts.
   consumption_entity: sensor.house_consumption_power
+  # Signed grid import/export sensor in watts.
   net_consumption_entity: sensor.grid_power
 
   # The controller expects one live actuator at a time.
   # A writable `number.*` entity can usually infer the service automatically.
+  # Writable power-limit entity for the selected actuator.
   power_control_entity: number.battery_output_power_limit
+  # Measured real output power for the selected actuator.
   actual_power_entity: sensor.battery_output_power
 
   # Optional battery safety inputs.
+  # Battery state of charge in percent.
   battery_soc_entity: sensor.battery_soc
+  # Battery reserve/discharge floor in percent.
   battery_discharge_limit_entity: number.battery_discharge_limit
 
   # For non-number domains, set the service explicitly.
+  # Home Assistant service used to write the actuator.
   # power_control_service: input_number/set_value
+  # Service field name carrying the numeric target.
   # power_control_value_key: value
 
   # If the entity exposes numeric min/max/step attributes, the controller can
   # infer them. Otherwise set these explicitly.
+  # Minimum allowed output target.
   # min_output_w: 0
+  # Maximum allowed output target.
   # max_output_w: 800
+  # Quantization step for actuator writes.
   # power_step_w: 50
 
+  # Constant baseline load offset added to the target calculation.
   baseline_load_w: 0
+  # Seconds between controller runs.
   control_interval_s: 30
+  # EMA smoothing constant for consumption.
   consumption_ema_tau_s: 75
+  # EMA smoothing constant for net import/export.
   net_ema_tau_s: 45
+  # Ignore small error inside this band.
   deadband_w: 50
+  # Snap very small targets down to zero.
   zero_output_threshold_w: 25
+  # Strong-export threshold for faster downward correction.
   fast_export_threshold_w: -80
+  # Gain applied when correcting import.
   import_correction_gain: 0.35
+  # Gain applied when correcting export.
   export_correction_gain: 1.0
 
+  # Minimum target change before a write is sent.
   min_change_w: 50
+  # Minimum time between writes.
   min_write_interval_s: 60
+  # Maximum upward change per cycle.
   max_increase_per_cycle_w: 150
+  # Maximum downward change per cycle.
   max_decrease_per_cycle_w: 300
+  # Faster downward change allowed during strong export.
   emergency_max_decrease_per_cycle_w: 500
 
+  # Stop-output buffer above the discharge floor.
   soc_stop_buffer_pct: 3
+  # Point above the discharge floor where full power is allowed again.
   soc_full_power_buffer_pct: 10
+  # Minimum derate factor inside the SOC ramp region.
   soc_min_derate_factor: 0.25
 
+  # Export is represented as a negative net value.
   net_export_negative: true
+  # Prefix for debug/status entities published by the app.
   debug_entity_prefix: sensor.ha_pv_optimization
+  # Compute targets without writing the actuator.
   dry_run: true
