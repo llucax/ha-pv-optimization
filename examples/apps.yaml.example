@@ -9,12 +9,23 @@ ha_pv_optimization:
   # Signed grid import/export sensor in watts.
   net_consumption_entity: sensor.grid_power
 
-  # The controller expects one live actuator at a time.
+  # The controller expects one live actuator block at a time.
   # A writable `number.*` entity can usually infer the service automatically.
+  # Inverter control:
+  # Writable power-limit entity for the selected actuator.
+  # power_control_entity: number.inverter_output_power_limit
+  # Measured real output power for the selected actuator.
+  # actual_power_entity: sensor.inverter_output_power
+  # Friendly label used in debug output.
+  # power_control_label: inverter
+
+  # Battery control:
   # Writable power-limit entity for the selected actuator.
   power_control_entity: number.battery_output_power_limit
   # Measured real output power for the selected actuator.
   actual_power_entity: sensor.battery_output_power
+  # Friendly label used in debug output.
+  power_control_label: battery
 
   # Optional battery safety inputs.
   # Battery state of charge in percent.
@@ -23,7 +34,7 @@ ha_pv_optimization:
   battery_discharge_limit_entity: number.battery_discharge_limit
 
   # For non-number domains, set the service explicitly.
-  # Home Assistant service used to write the actuator.
+  # Home Assistant service used to write the active actuator.
   # power_control_service: input_number/set_value
   # Service field name carrying the numeric target.
   # power_control_value_key: value
