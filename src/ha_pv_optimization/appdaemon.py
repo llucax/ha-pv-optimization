@@ -64,6 +64,22 @@ def _as_non_empty_str(value: Any) -> str | None:
     return text or None
 
 
+def _format_duration(duration_s: float) -> str:
+    total_seconds = max(0, int(round(duration_s)))
+    minutes, seconds = divmod(total_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m{seconds:02d}s"
+    if minutes:
+        return f"{minutes}m{seconds:02d}s"
+    return f"{seconds}s"
+
+
+_MISSING_REQUIRED_WARNING_GRACE_S = 15 * 60.0
+_EXPECTED_IDLE_OUTPUT_THRESHOLD_W = 20.0
+_LOW_SUN_ELEVATION_DEG = 10.0
+
+
 def _default_power_control_service(entity_id: str) -> str | None:
     domain = entity_id.split(".", 1)[0]
     if domain in {"number", "input_number"}:
@@ -92,6 +108,13 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         self.controller = PowerControllerCore(self.config)
         self.last_write_monotonic: float | None = None
         self.last_write_iso: str | None = None
+        self.missing_required_entities: tuple[str, ...] | None = None
+        self.missing_required_since_monotonic: float | None = None
+        self.missing_required_since_iso: str | None = None
+        self.missing_required_expected_reason: str | None = None
+        self.missing_required_unexpected_since_monotonic: float | None = None
+        self.missing_required_unexpected_since_iso: str | None = None
+        self.missing_required_warning_active = False
 
         self.log(
             "Initialized ha-pv-optimization controller"
@@ -215,22 +238,23 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
     def _control_tick(self, kwargs: dict[str, Any]) -> None:
         consumption_w = self._read_entity_float(self.entities.consumption_entity)
         current_limit_w = self._read_entity_float(self.entities.power_control_entity)
+        actual_power_w = self._read_entity_float(self.entities.actual_power_entity)
+        soc_pct = self._read_entity_float(self.entities.battery_soc_entity)
+        discharge_limit_pct = self._read_entity_float(
+            self.entities.battery_discharge_limit_entity
+        )
 
-        if consumption_w is None or current_limit_w is None:
-            self._publish_status(
-                state="blocked",
-                reason="missing_required_entity",
-                raw_consumption_w=consumption_w,
-                current_limit_w=current_limit_w,
-            )
-            self.log(
-                "Missing required controller entity state"
-                f" (consumption={self.entities.consumption_entity}:{consumption_w},"
-                f" power_control={self.entities.power_control_entity}:"
-                f"{current_limit_w})",
-                level="WARNING",
-            )
+        if self._handle_missing_required_entities(
+            consumption_w=consumption_w,
+            current_limit_w=current_limit_w,
+            actual_power_w=actual_power_w,
+            soc_pct=soc_pct,
+            discharge_limit_pct=discharge_limit_pct,
+        ):
             return
+
+        assert consumption_w is not None
+        assert current_limit_w is not None
 
         now_monotonic = time.monotonic()
         seconds_since_last_write = None
@@ -243,11 +267,9 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             net_consumption_w=self._read_entity_float(
                 self.entities.net_consumption_entity
             ),
-            actual_power_w=self._read_entity_float(self.entities.actual_power_entity),
-            soc_pct=self._read_entity_float(self.entities.battery_soc_entity),
-            discharge_limit_pct=self._read_entity_float(
-                self.entities.battery_discharge_limit_entity
-            ),
+            actual_power_w=actual_power_w,
+            soc_pct=soc_pct,
+            discharge_limit_pct=discharge_limit_pct,
             seconds_since_last_write=seconds_since_last_write,
         )
         result = self.controller.step(inputs)
@@ -290,6 +312,231 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         )
 
         self._publish_result(result, inputs)
+
+    def _handle_missing_required_entities(
+        self,
+        consumption_w: float | None,
+        current_limit_w: float | None,
+        actual_power_w: float | None,
+        soc_pct: float | None,
+        discharge_limit_pct: float | None,
+    ) -> bool:
+        missing_entities: list[str] = []
+        if consumption_w is None:
+            missing_entities.append("consumption")
+        if current_limit_w is None:
+            missing_entities.append("power_control")
+
+        if not missing_entities:
+            self._log_required_entity_recovery()
+            return False
+
+        expected_reason: str | None = None
+        sun_state: str | None = None
+        sun_elevation_deg: float | None = None
+        if missing_entities == ["power_control"]:
+            sun_state, sun_elevation_deg = self._read_sun_status()
+            expected_reason = self._expected_missing_power_control_reason(
+                actual_power_w=actual_power_w,
+                soc_pct=soc_pct,
+                discharge_limit_pct=discharge_limit_pct,
+                sun_state=sun_state,
+                sun_elevation_deg=sun_elevation_deg,
+            )
+
+        now_monotonic = time.monotonic()
+        now_iso = dt.datetime.now(dt.UTC).isoformat()
+        missing_key = tuple(missing_entities)
+        if self.missing_required_entities != missing_key:
+            self._start_missing_required_episode(
+                missing_key=missing_key,
+                expected_reason=expected_reason,
+                now_monotonic=now_monotonic,
+                now_iso=now_iso,
+                consumption_w=consumption_w,
+                current_limit_w=current_limit_w,
+            )
+        else:
+            self._update_missing_required_episode(
+                expected_reason=expected_reason,
+                now_monotonic=now_monotonic,
+                now_iso=now_iso,
+            )
+
+        self._publish_status(
+            state="blocked",
+            reason="missing_required_entity",
+            missing_entities=missing_entities,
+            availability_state=self._missing_required_availability_state(),
+            expected_missing_reason=self.missing_required_expected_reason,
+            warning_active=self.missing_required_warning_active,
+            missing_since_utc=self.missing_required_since_iso,
+            unexpected_missing_since_utc=self.missing_required_unexpected_since_iso,
+            warning_grace_s=_MISSING_REQUIRED_WARNING_GRACE_S,
+            raw_consumption_w=consumption_w,
+            current_limit_w=current_limit_w,
+            actual_power_w=actual_power_w,
+            battery_soc_pct=soc_pct,
+            battery_discharge_limit_pct=discharge_limit_pct,
+            sun_state=sun_state,
+            sun_elevation_deg=sun_elevation_deg,
+        )
+
+        return True
+
+    def _start_missing_required_episode(
+        self,
+        missing_key: tuple[str, ...],
+        expected_reason: str | None,
+        now_monotonic: float,
+        now_iso: str,
+        consumption_w: float | None,
+        current_limit_w: float | None,
+    ) -> None:
+        self.missing_required_entities = missing_key
+        self.missing_required_since_monotonic = now_monotonic
+        self.missing_required_since_iso = now_iso
+        self.missing_required_expected_reason = expected_reason
+
+        if expected_reason is None:
+            self.missing_required_unexpected_since_monotonic = now_monotonic
+            self.missing_required_unexpected_since_iso = now_iso
+            self.missing_required_warning_active = True
+            self.log(
+                "Missing required controller entity state"
+                f" (missing={','.join(missing_key)},"
+                f" consumption={self.entities.consumption_entity}:{consumption_w},"
+                f" power_control={self.entities.power_control_entity}:"
+                f"{current_limit_w})",
+                level="WARNING",
+            )
+            return
+
+        self.missing_required_unexpected_since_monotonic = None
+        self.missing_required_unexpected_since_iso = None
+        self.missing_required_warning_active = False
+        self.log(
+            "Required controller entity missing but currently expected"
+            f" (entities={','.join(missing_key)},"
+            f" reason={expected_reason})"
+        )
+
+    def _update_missing_required_episode(
+        self,
+        expected_reason: str | None,
+        now_monotonic: float,
+        now_iso: str,
+    ) -> None:
+        previous_reason = self.missing_required_expected_reason
+        if expected_reason != previous_reason:
+            self.missing_required_expected_reason = expected_reason
+            if expected_reason is not None:
+                self.missing_required_unexpected_since_monotonic = None
+                self.missing_required_unexpected_since_iso = None
+                self.missing_required_warning_active = False
+                self.log(
+                    "Required controller entity missing is now expected"
+                    f" (entities={','.join(self.missing_required_entities or ())},"
+                    f" reason={expected_reason})"
+                )
+                return
+
+            self.missing_required_unexpected_since_monotonic = now_monotonic
+            self.missing_required_unexpected_since_iso = now_iso
+            self.missing_required_warning_active = False
+            self.log(
+                "Required controller entity still missing"
+                " after expected condition cleared"
+                f" (entities={','.join(self.missing_required_entities or ())},"
+                f" previous_reason={previous_reason},"
+                f" warning_in={_format_duration(_MISSING_REQUIRED_WARNING_GRACE_S)})"
+            )
+            return
+
+        if expected_reason is not None or self.missing_required_warning_active:
+            return
+
+        if self.missing_required_unexpected_since_monotonic is None:
+            self.missing_required_unexpected_since_monotonic = now_monotonic
+            self.missing_required_unexpected_since_iso = now_iso
+            return
+
+        if (
+            now_monotonic - self.missing_required_unexpected_since_monotonic
+            < _MISSING_REQUIRED_WARNING_GRACE_S
+        ):
+            return
+
+        self.missing_required_warning_active = True
+        self.log(
+            "Required controller entity still missing after warning grace period"
+            f" (entities={','.join(self.missing_required_entities or ())},"
+            f" grace={_format_duration(_MISSING_REQUIRED_WARNING_GRACE_S)})",
+            level="WARNING",
+        )
+
+    def _expected_missing_power_control_reason(
+        self,
+        actual_power_w: float | None,
+        soc_pct: float | None,
+        discharge_limit_pct: float | None,
+        sun_state: str | None,
+        sun_elevation_deg: float | None,
+    ) -> str | None:
+        if (
+            soc_pct is not None
+            and discharge_limit_pct is not None
+            and soc_pct <= discharge_limit_pct + self.config.soc_stop_buffer_pct
+        ):
+            return "battery_reserve"
+
+        if actual_power_w is None or actual_power_w > _EXPECTED_IDLE_OUTPUT_THRESHOLD_W:
+            return None
+
+        if sun_state == "below_horizon":
+            return "sun_down"
+
+        if sun_elevation_deg is not None and sun_elevation_deg < _LOW_SUN_ELEVATION_DEG:
+            return "low_sun"
+
+        return None
+
+    def _read_sun_status(self) -> tuple[str | None, float | None]:
+        sun_state = _as_non_empty_str(self.get_state("sun.sun"))
+        sun_attributes = self._read_entity_attributes("sun.sun")
+        sun_elevation_deg = _as_float(sun_attributes.get("elevation"))
+        return sun_state, sun_elevation_deg
+
+    def _missing_required_availability_state(self) -> str:
+        if self.missing_required_expected_reason is not None:
+            return "expected_missing"
+        if self.missing_required_warning_active:
+            return "warning_active"
+        return "warning_grace"
+
+    def _log_required_entity_recovery(self) -> None:
+        if self.missing_required_entities is None:
+            return
+
+        duration_text = "unknown duration"
+        if self.missing_required_since_monotonic is not None:
+            duration_s = time.monotonic() - self.missing_required_since_monotonic
+            duration_text = _format_duration(duration_s)
+
+        self.log(
+            "Required controller entity state recovered"
+            f" after {duration_text}"
+            f" (entities={','.join(self.missing_required_entities)},"
+            f" warning_active={self.missing_required_warning_active},"
+            f" last_expected_reason={self.missing_required_expected_reason})"
+        )
+        self.missing_required_entities = None
+        self.missing_required_since_monotonic = None
+        self.missing_required_since_iso = None
+        self.missing_required_expected_reason = None
+        self.missing_required_unexpected_since_monotonic = None
+        self.missing_required_unexpected_since_iso = None
+        self.missing_required_warning_active = False
 
     def _read_entity_float(self, entity_id: str | None) -> float | None:
         if not entity_id:

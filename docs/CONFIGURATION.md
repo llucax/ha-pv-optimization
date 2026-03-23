@@ -91,6 +91,8 @@ When both battery inputs are present, the controller:
 - `debug_entity_prefix` - prefix used for AppDaemon-published debug sensors; default `sensor.ha_pv_optimization`.
 - `dry_run` - if `true`, computes targets and publishes debug state without writing the actuator; default `true` in the AppDaemon wrapper.
 
+When required entities disappear, the status entity also reports availability-oriented attributes such as `availability_state`, `expected_missing_reason`, `warning_active`, and missing timestamps so you can distinguish expected overnight/reserve windows from unexpected outages.
+
 ## Full example key list
 
 The generic example currently includes these keys:
