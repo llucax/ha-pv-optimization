@@ -93,3 +93,10 @@ ha_pv_optimization:
   debug_entity_prefix: sensor.ha_pv_optimization
   # Compute targets without writing the actuator.
   dry_run: true
+
+  # Delay warnings after an expected-missing window clears.
+  # availability_warning_grace_s: 3600
+  # Treat low measured output as effectively idle for availability heuristics.
+  # availability_idle_output_threshold_w: 20
+  # Treat sun below this elevation as low-sun for availability heuristics.
+  # availability_low_sun_elevation_deg: 10

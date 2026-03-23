@@ -93,6 +93,12 @@ When both battery inputs are present, the controller:
 
 When required entities disappear, the status entity also reports availability-oriented attributes such as `availability_state`, `expected_missing_reason`, `warning_active`, and missing timestamps so you can distinguish expected overnight/reserve windows from unexpected outages.
 
+## Availability-aware warning behavior
+
+- `availability_warning_grace_s` - seconds to wait before warning after an expected-missing condition clears; default `900`.
+- `availability_idle_output_threshold_w` - output threshold treated as effectively idle when inferring expected missing power-control entities; default `20`.
+- `availability_low_sun_elevation_deg` - sun elevation below which low-output power-control gaps are still treated as expected; default `10`.
+
 ## Full example key list
 
 The generic example currently includes these keys:
@@ -134,5 +140,8 @@ The same example also documents these optional keys in comments because they are
 - `max_output_w`
 - `power_step_w`
 - `power_control_label`
+- `availability_warning_grace_s`
+- `availability_idle_output_threshold_w`
+- `availability_low_sun_elevation_deg`
 
 See `examples/apps.yaml.example` for the complete starting configuration.

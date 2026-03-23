@@ -63,6 +63,7 @@ def test_power_control_missing_is_expected_at_battery_reserve(monkeypatch: Any) 
             "actual_power_entity": "sensor.output_power",
             "battery_soc_entity": "sensor.battery_soc",
             "battery_discharge_limit_entity": "number.battery_reserve",
+            "availability_warning_grace_s": 30,
             "max_output_w": 800,
             "dry_run": True,
         },
@@ -105,6 +106,7 @@ def test_expected_missing_warns_after_conditions_clear_and_grace_expires(
             "actual_power_entity": "sensor.output_power",
             "battery_soc_entity": "sensor.battery_soc",
             "battery_discharge_limit_entity": "number.battery_reserve",
+            "availability_warning_grace_s": 30,
             "max_output_w": 800,
             "dry_run": True,
         },
@@ -132,8 +134,9 @@ def test_expected_missing_warns_after_conditions_clear_and_grace_expires(
     status_update = app.state_updates[-1]
     assert status_update[2]["availability_state"] == "warning_grace"
     assert status_update[2]["expected_missing_reason"] is None
+    assert status_update[2]["warning_grace_s"] == 30
 
-    now["value"] = appdaemon_module._MISSING_REQUIRED_WARNING_GRACE_S + 61.0
+    now["value"] = 91.0
     app._control_tick({})
 
     warning_messages = _warning_messages(app)
@@ -159,6 +162,7 @@ def test_power_control_missing_is_expected_while_sun_is_down(monkeypatch: Any) -
             "consumption_entity": "sensor.load",
             "power_control_entity": "number.limit",
             "actual_power_entity": "sensor.output_power",
+            "availability_warning_grace_s": 30,
             "max_output_w": 800,
             "dry_run": True,
         },
@@ -185,11 +189,44 @@ def test_power_control_missing_is_expected_while_sun_is_down(monkeypatch: Any) -
     app._control_tick({})
     assert app.state_updates[-1][2]["availability_state"] == "warning_grace"
 
-    now["value"] = appdaemon_module._MISSING_REQUIRED_WARNING_GRACE_S + 61.0
+    now["value"] = 91.0
     app._control_tick({})
     warning_messages = _warning_messages(app)
     assert len(warning_messages) == 1
     assert "warning grace period" in warning_messages[0]
+
+
+def test_power_control_missing_uses_configurable_idle_and_sun_thresholds(
+    monkeypatch: Any,
+) -> None:
+    now = {"value": 0.0}
+    monkeypatch.setattr(appdaemon_module.time, "monotonic", lambda: now["value"])
+
+    app = FakeHaPvOptimization(
+        args={
+            "consumption_entity": "sensor.load",
+            "power_control_entity": "number.limit",
+            "actual_power_entity": "sensor.output_power",
+            "availability_idle_output_threshold_w": 30,
+            "availability_low_sun_elevation_deg": 25,
+            "max_output_w": 800,
+            "dry_run": True,
+        },
+        state_map={
+            "sensor.load": "123",
+            "number.limit": "unavailable",
+            "sensor.output_power": "25",
+            "sun.sun": {"state": "above_horizon", "attributes": {"elevation": 20}},
+        },
+    )
+
+    app.initialize()
+    app._control_tick({})
+
+    assert _warning_messages(app) == []
+    status_update = app.state_updates[-1]
+    assert status_update[2]["expected_missing_reason"] == "low_sun"
+    assert status_update[2]["actual_power_w"] == 25.0
 
 
 def test_consumption_missing_warns_once_until_recovery(monkeypatch: Any) -> None:

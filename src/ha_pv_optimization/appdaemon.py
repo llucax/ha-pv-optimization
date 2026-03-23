@@ -75,9 +75,9 @@ def _format_duration(duration_s: float) -> str:
     return f"{seconds}s"
 
 
-_MISSING_REQUIRED_WARNING_GRACE_S = 15 * 60.0
-_EXPECTED_IDLE_OUTPUT_THRESHOLD_W = 20.0
-_LOW_SUN_ELEVATION_DEG = 10.0
+_DEFAULT_AVAILABILITY_WARNING_GRACE_S = 15 * 60.0
+_DEFAULT_AVAILABILITY_IDLE_OUTPUT_THRESHOLD_W = 20.0
+_DEFAULT_AVAILABILITY_LOW_SUN_ELEVATION_DEG = 10.0
 
 
 def _default_power_control_service(entity_id: str) -> str | None:
@@ -101,10 +101,18 @@ class EntityConfig:
     debug_entity_prefix: str
 
 
+@dataclass(frozen=True)
+class AvailabilityConfig:
+    warning_grace_s: float
+    idle_output_threshold_w: float
+    low_sun_elevation_deg: float
+
+
 class HaPvOptimization(BaseHass):  # type: ignore[misc]
     def initialize(self) -> None:
         self.entities = self._build_entity_config()
         self.config = self._build_controller_config()
+        self.availability = self._build_availability_config()
         self.controller = PowerControllerCore(self.config)
         self.last_write_monotonic: float | None = None
         self.last_write_iso: str | None = None
@@ -223,6 +231,33 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             soc_min_derate_factor=self._get_float("soc_min_derate_factor", 0.25),
             net_export_negative=_as_bool(self.args.get("net_export_negative"), True),
             dry_run=_as_bool(self.args.get("dry_run"), True),
+        )
+
+    def _build_availability_config(self) -> AvailabilityConfig:
+        warning_grace_s = self._get_float(
+            "availability_warning_grace_s",
+            _DEFAULT_AVAILABILITY_WARNING_GRACE_S,
+        )
+        idle_output_threshold_w = self._get_float(
+            "availability_idle_output_threshold_w",
+            _DEFAULT_AVAILABILITY_IDLE_OUTPUT_THRESHOLD_W,
+        )
+        low_sun_elevation_deg = self._get_float(
+            "availability_low_sun_elevation_deg",
+            _DEFAULT_AVAILABILITY_LOW_SUN_ELEVATION_DEG,
+        )
+
+        if warning_grace_s < 0:
+            raise ValueError("`availability_warning_grace_s` must be non-negative.")
+        if idle_output_threshold_w < 0:
+            raise ValueError(
+                "`availability_idle_output_threshold_w` must be non-negative."
+            )
+
+        return AvailabilityConfig(
+            warning_grace_s=warning_grace_s,
+            idle_output_threshold_w=idle_output_threshold_w,
+            low_sun_elevation_deg=low_sun_elevation_deg,
         )
 
     def _require_entity(self, key: str) -> str:
@@ -372,7 +407,7 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             warning_active=self.missing_required_warning_active,
             missing_since_utc=self.missing_required_since_iso,
             unexpected_missing_since_utc=self.missing_required_unexpected_since_iso,
-            warning_grace_s=_MISSING_REQUIRED_WARNING_GRACE_S,
+            warning_grace_s=self.availability.warning_grace_s,
             raw_consumption_w=consumption_w,
             current_limit_w=current_limit_w,
             actual_power_w=actual_power_w,
@@ -449,7 +484,7 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
                 " after expected condition cleared"
                 f" (entities={','.join(self.missing_required_entities or ())},"
                 f" previous_reason={previous_reason},"
-                f" warning_in={_format_duration(_MISSING_REQUIRED_WARNING_GRACE_S)})"
+                f" warning_in={_format_duration(self.availability.warning_grace_s)})"
             )
             return
 
@@ -463,7 +498,7 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
 
         if (
             now_monotonic - self.missing_required_unexpected_since_monotonic
-            < _MISSING_REQUIRED_WARNING_GRACE_S
+            < self.availability.warning_grace_s
         ):
             return
 
@@ -471,7 +506,7 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         self.log(
             "Required controller entity still missing after warning grace period"
             f" (entities={','.join(self.missing_required_entities or ())},"
-            f" grace={_format_duration(_MISSING_REQUIRED_WARNING_GRACE_S)})",
+            f" grace={_format_duration(self.availability.warning_grace_s)})",
             level="WARNING",
         )
 
@@ -490,13 +525,19 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         ):
             return "battery_reserve"
 
-        if actual_power_w is None or actual_power_w > _EXPECTED_IDLE_OUTPUT_THRESHOLD_W:
+        if (
+            actual_power_w is None
+            or actual_power_w > self.availability.idle_output_threshold_w
+        ):
             return None
 
         if sun_state == "below_horizon":
             return "sun_down"
 
-        if sun_elevation_deg is not None and sun_elevation_deg < _LOW_SUN_ELEVATION_DEG:
+        if (
+            sun_elevation_deg is not None
+            and sun_elevation_deg < self.availability.low_sun_elevation_deg
+        ):
             return "low_sun"
 
         return None
@@ -599,6 +640,13 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             if inputs.discharge_limit_pct is None
             else round(inputs.discharge_limit_pct, 1),
             "allowed_max_output_w": round(result.allowed_max_output_w, 1),
+            "availability_warning_grace_s": round(self.availability.warning_grace_s, 1),
+            "availability_idle_output_threshold_w": round(
+                self.availability.idle_output_threshold_w, 1
+            ),
+            "availability_low_sun_elevation_deg": round(
+                self.availability.low_sun_elevation_deg, 1
+            ),
             "baseline_load_w": round(self.config.baseline_load_w, 1),
             "seconds_since_last_write": None
             if inputs.seconds_since_last_write is None

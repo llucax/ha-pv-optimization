@@ -71,7 +71,7 @@ The example includes:
 - optional sensors: `net_consumption_entity` (only for a true grid-boundary import/export meter), `actual_power_entity`, `battery_soc_entity`, `battery_discharge_limit_entity`
 - optional actuator overrides: `power_control_service`, `power_control_value_key`, `power_control_label`
 - optional output range overrides: `min_output_w`, `max_output_w`, `power_step_w`
-- control tuning and safety settings such as `control_interval_s`, `deadband_w`, `min_write_interval_s`, and `dry_run`
+- control tuning and safety settings such as `control_interval_s`, `deadband_w`, `min_write_interval_s`, `dry_run`, and availability-warning tuning keys
 
 ### `examples/ha_pv_optimization_app.py`
 
