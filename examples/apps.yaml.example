@@ -6,8 +6,10 @@ ha_pv_optimization:
 
   # Main house/load power sensor in watts.
   consumption_entity: sensor.house_consumption_power
-  # Signed grid import/export sensor in watts.
-  net_consumption_entity: sensor.grid_power
+  # Optional signed grid import/export sensor in watts.
+  # Enable this only for a true grid-boundary meter, not for a derived
+  # sensor such as house consumption minus inverter output.
+  # net_consumption_entity: sensor.grid_power
 
   # The controller expects one live actuator block at a time.
   # A writable `number.*` entity can usually infer the service automatically.
@@ -54,17 +56,17 @@ ha_pv_optimization:
   control_interval_s: 30
   # EMA smoothing constant for consumption.
   consumption_ema_tau_s: 75
-  # EMA smoothing constant for net import/export.
+  # EMA smoothing constant for net import/export when enabled above.
   net_ema_tau_s: 45
   # Ignore small error inside this band.
   deadband_w: 50
   # Snap very small targets down to zero.
   zero_output_threshold_w: 25
-  # Strong-export threshold for faster downward correction.
+  # Strong-export threshold for faster downward correction when enabled.
   fast_export_threshold_w: -80
-  # Gain applied when correcting import.
+  # Gain applied when correcting import when enabled.
   import_correction_gain: 0.35
-  # Gain applied when correcting export.
+  # Gain applied when correcting export when enabled.
   export_correction_gain: 1.0
 
   # Minimum target change before a write is sent.
@@ -85,7 +87,7 @@ ha_pv_optimization:
   # Minimum derate factor inside the SOC ramp region.
   soc_min_derate_factor: 0.25
 
-  # Export is represented as a negative net value.
+  # Export is represented as a negative net value when net correction is used.
   net_export_negative: true
   # Prefix for debug/status entities published by the app.
   debug_entity_prefix: sensor.ha_pv_optimization

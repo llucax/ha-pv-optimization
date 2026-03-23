@@ -51,14 +51,14 @@ Use these files as starting points:
 ### `examples/appdaemon.yaml.example`
 
 - `appdaemon.time_zone` - AppDaemon-wide timezone used for scheduling and timestamps.
-- `appdaemon.latitude` - optional site latitude for AppDaemon sunrise/sunset helpers.
-- `appdaemon.longitude` - optional site longitude for AppDaemon sunrise/sunset helpers.
-- `appdaemon.elevation` - optional site elevation for AppDaemon sunrise/sunset helpers.
+- `appdaemon.latitude` - required site latitude in decimal degrees.
+- `appdaemon.longitude` - required site longitude in decimal degrees.
+- `appdaemon.elevation` - required site elevation in meters.
 - `appdaemon.plugins.HASS.type` - AppDaemon plugin type; keep `hass` for Home Assistant.
 - `appdaemon.plugins.HASS.ha_url` - Home Assistant base URL that AppDaemon connects to.
 - `appdaemon.plugins.HASS.token` - Home Assistant long-lived access token.
 - `appdaemon.plugins.HASS.cert_verify` - whether TLS certificates are verified for the Home Assistant endpoint.
-- `http`, `admin`, `api` - enable AppDaemon's built-in HTTP, admin, and API sections using the usual default structure.
+- `http`, `admin`, `api` - optional AppDaemon web/UI sections; omit them unless you want AppDaemon's own web UI or API.
 
 ### `examples/apps.yaml.example`
 
@@ -68,7 +68,7 @@ The example includes:
 
 - required AppDaemon loading keys: `module`, `class`
 - required controller entities: `consumption_entity`, `power_control_entity`
-- optional sensors: `net_consumption_entity`, `actual_power_entity`, `battery_soc_entity`, `battery_discharge_limit_entity`
+- optional sensors: `net_consumption_entity` (only for a true grid-boundary import/export meter), `actual_power_entity`, `battery_soc_entity`, `battery_discharge_limit_entity`
 - optional actuator overrides: `power_control_service`, `power_control_value_key`, `power_control_label`
 - optional output range overrides: `min_output_w`, `max_output_w`, `power_step_w`
 - control tuning and safety settings such as `control_interval_s`, `deadband_w`, `min_write_interval_s`, and `dry_run`

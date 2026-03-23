@@ -1,11 +1,11 @@
 appdaemon:
   # AppDaemon-wide timezone for schedules and timestamps.
   time_zone: UTC
-  # Optional site latitude for AppDaemon sunrise/sunset helpers.
+  # Required site latitude in decimal degrees.
   latitude: 0
-  # Optional site longitude for AppDaemon sunrise/sunset helpers.
+  # Required site longitude in decimal degrees.
   longitude: 0
-  # Optional site elevation in meters for AppDaemon location helpers.
+  # Required site elevation in meters.
   elevation: 0
   plugins:
     HASS:
@@ -18,9 +18,6 @@ appdaemon:
       # Verify the Home Assistant TLS certificate in the generic example.
       cert_verify: true
 
-# Enable AppDaemon's built-in HTTP server.
-http:
-# Enable the AppDaemon admin UI.
-admin:
-# Enable the AppDaemon API.
-api:
+
+# `http`, `admin`, and `api` are omitted by default.
+# Enable them only if you want AppDaemon's own web UI or API.

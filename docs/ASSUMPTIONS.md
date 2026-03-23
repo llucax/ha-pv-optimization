@@ -9,13 +9,15 @@ It is not a universal EMS.
 - one live actuator at a time
 - a numeric, non-negative power limit
 - one main household-consumption signal in watts
-- optionally one net import/export correction signal in watts
+- optionally one net import/export correction signal in watts measured at the grid boundary
 - optionally battery SoC and reserve-floor inputs in percent
 - coarse control cadence measured in tens of seconds
 
 ## Topology assumptions
 
 The controller works best when the chosen actuator has a predictable effect on the same electrical boundary measured by your Home Assistant sensors.
+
+If you configure `net_consumption_entity`, it should represent real grid import/export at that boundary. Derived signals such as house consumption minus inverter output can cause double-counting and should be left unset.
 
 Good fit:
 

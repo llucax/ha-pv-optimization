@@ -26,7 +26,7 @@ If either required key is missing, startup fails.
 
 ## Recommended and optional entity inputs
 
-- `net_consumption_entity` - signed net import/export sensor in watts; recommended because it lets the controller correct import and export directly.
+- `net_consumption_entity` - optional signed net import/export sensor in watts from a true grid-boundary meter; leave it unset for derived signals such as house consumption minus inverter output.
 - `actual_power_entity` - measured power output of the chosen actuator; optional, used for debug/status visibility.
 - `battery_soc_entity` - battery state of charge sensor in percent; optional, used for reserve protection.
 - `battery_discharge_limit_entity` - battery reserve floor in percent; optional, used together with `battery_soc_entity`.
@@ -59,13 +59,13 @@ Startup fails if `max_output_w` cannot be determined, or if `max_output_w < min_
 
 - `control_interval_s` - seconds between control cycles; default `30`.
 - `consumption_ema_tau_s` - smoothing time constant for `consumption_entity`; default `75`.
-- `net_ema_tau_s` - smoothing time constant for `net_consumption_entity`; default `45`.
+- `net_ema_tau_s` - smoothing time constant for `net_consumption_entity` when configured; default `45`.
 - `baseline_load_w` - constant load offset added to the target calculation; default `0`.
 - `deadband_w` - residual error band where no corrective action is taken; default `50`.
 - `zero_output_threshold_w` - target values below this are snapped to `0`; default `25`.
-- `fast_export_threshold_w` - export threshold that triggers aggressive downward correction; default `-80`.
-- `import_correction_gain` - gain applied when correcting import; default `0.35`.
-- `export_correction_gain` - gain applied when correcting export; default `1.0`.
+- `fast_export_threshold_w` - export threshold that triggers aggressive downward correction when `net_consumption_entity` is configured; default `-80`.
+- `import_correction_gain` - gain applied when correcting import when `net_consumption_entity` is configured; default `0.35`.
+- `export_correction_gain` - gain applied when correcting export when `net_consumption_entity` is configured; default `1.0`.
 
 ## Write-rate protection
 
@@ -87,7 +87,7 @@ When both battery inputs are present, the controller:
 
 ## Sign convention and debug output
 
-- `net_export_negative` - `true` when export is reported as a negative net value; default `true`.
+- `net_export_negative` - `true` when export is reported as a negative net value for `net_consumption_entity`; default `true`.
 - `debug_entity_prefix` - prefix used for AppDaemon-published debug sensors; default `sensor.ha_pv_optimization`.
 - `dry_run` - if `true`, computes targets and publishes debug state without writing the actuator; default `true` in the AppDaemon wrapper.
 
