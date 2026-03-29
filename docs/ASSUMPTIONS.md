@@ -6,7 +6,7 @@ It is not a universal EMS.
 
 ## Control model assumptions
 
-- one live actuator at a time
+- one primary actuator and optionally one secondary trim actuator
 - a numeric, non-negative power limit
 - one main household-consumption signal in watts
 - optionally one net import/export correction signal in watts measured at the grid boundary
@@ -24,6 +24,7 @@ Good fit:
 - behind-the-meter self-consumption control
 - a single inverter output limit
 - a single battery output limit
+- a battery base limit plus an inverter trim limit
 - topologies where increasing the configured limit increases house-serving power
 
 Possible with caveats:
@@ -34,7 +35,7 @@ Possible with caveats:
 
 Poor fit:
 
-- multi-actuator coordination
+- coordination across more than one primary actuator plus one trim actuator
 - signed charge/discharge setpoints
 - mode-only control surfaces
 - per-phase balancing
@@ -46,7 +47,7 @@ If you enable battery protection inputs, the controller assumes:
 
 - SoC is reported in percent
 - the reserve floor is reported in percent
-- output should stop or derate near that floor
+- the primary actuator is the battery-linked one that should stop or derate near that floor
 
 If your device exposes different semantics, configure the app carefully or leave those inputs unset.
 

@@ -67,10 +67,11 @@ Every app-specific key is documented in `docs/CONFIGURATION.md`.
 The example includes:
 
 - required AppDaemon loading keys: `module`, `class`
-- required controller entities: `consumption_entity`, `power_control_entity`
-- optional sensors: `net_consumption_entity` (only for a true grid-boundary import/export meter), `actual_power_entity`, `battery_soc_entity`, `battery_discharge_limit_entity`
-- optional actuator overrides: `power_control_service`, `power_control_value_key`, `power_control_label`
-- optional output range overrides: `min_output_w`, `max_output_w`, `power_step_w`
+- required controller entities: `consumption_entity`, `battery_power_control_entity`
+- optional sensors: `net_consumption_entity` (only for a true grid-boundary import/export meter), `battery_actual_power_entity`, `inverter_actual_power_entity`, `battery_soc_entity`, `battery_discharge_limit_entity`
+- optional inverter-actuator entity: `inverter_power_control_entity`
+- optional actuator overrides: `battery_power_control_service`, `battery_power_control_value_key`, `battery_power_control_label`, `inverter_power_control_service`, `inverter_power_control_value_key`, `inverter_power_control_label`
+- optional output range overrides: `battery_min_output_w`, `battery_max_output_w`, `battery_power_step_w`, `inverter_min_output_w`, `inverter_max_output_w`, `inverter_power_step_w`
 - control tuning and safety settings such as `control_interval_s`, `deadband_w`, `min_write_interval_s`, `dry_run`, and availability-warning tuning keys
 
 ### `examples/ha_pv_optimization_app.py`

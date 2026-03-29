@@ -11,23 +11,20 @@ ha_pv_optimization:
   # sensor such as house consumption minus inverter output.
   # net_consumption_entity: sensor.grid_power
 
-  # The controller expects one live actuator block at a time.
+  # The primary actuator carries the coarse/base target.
   # A writable `number.*` entity can usually infer the service automatically.
-  # Inverter control:
-  # Writable power-limit entity for the selected actuator.
-  # power_control_entity: number.inverter_output_power_limit
-  # Measured real output power for the selected actuator.
-  # actual_power_entity: sensor.inverter_output_power
-  # Friendly label used in debug output.
-  # power_control_label: inverter
+  # Battery-style primary control:
+  # Writable power-limit entity for the primary actuator.
+  battery_power_control_entity: number.battery_output_power_limit
+  # Measured real output power for the primary actuator.
+  battery_actual_power_entity: sensor.battery_output_power
+  # Friendly label used in debug output for the primary actuator.
+  battery_power_control_label: battery
 
-  # Battery control:
-  # Writable power-limit entity for the selected actuator.
-  power_control_entity: number.battery_output_power_limit
-  # Measured real output power for the selected actuator.
-  actual_power_entity: sensor.battery_output_power
-  # Friendly label used in debug output.
-  power_control_label: battery
+  # Optional trim actuator for a faster secondary limit, for example an inverter.
+  # inverter_power_control_entity: number.inverter_output_power_limit
+  # inverter_actual_power_entity: sensor.inverter_output_power
+  # inverter_power_control_label: inverter
 
   # Optional battery safety inputs.
   # Battery state of charge in percent.
@@ -36,19 +33,24 @@ ha_pv_optimization:
   battery_discharge_limit_entity: number.battery_discharge_limit
 
   # For non-number domains, set the service explicitly.
-  # Home Assistant service used to write the active actuator.
-  # power_control_service: input_number/set_value
-  # Service field name carrying the numeric target.
-  # power_control_value_key: value
+  # Home Assistant service used to write the primary actuator.
+  # battery_power_control_service: input_number/set_value
+  # Service field name carrying the primary numeric target.
+  # battery_power_control_value_key: value
+  # inverter_power_control_service: input_number/set_value
+  # inverter_power_control_value_key: value
 
   # If the entity exposes numeric min/max/step attributes, the controller can
   # infer them. Otherwise set these explicitly.
-  # Minimum allowed output target.
-  # min_output_w: 0
-  # Maximum allowed output target.
-  # max_output_w: 800
-  # Quantization step for actuator writes.
-  # power_step_w: 50
+  # Minimum allowed primary output target.
+  # battery_min_output_w: 0
+  # Maximum allowed primary output target.
+  # battery_max_output_w: 800
+  # Quantization step for primary-actuator writes.
+  # battery_power_step_w: 50
+  # inverter_min_output_w: 30
+  # inverter_max_output_w: 800
+  # inverter_power_step_w: 10
 
   # Constant baseline load offset added to the target calculation.
   baseline_load_w: 0
@@ -70,15 +72,26 @@ ha_pv_optimization:
   export_correction_gain: 1.0
 
   # Minimum target change before a write is sent.
-  min_change_w: 50
+  battery_min_change_w: 50
   # Minimum time between writes.
-  min_write_interval_s: 60
+  battery_min_write_interval_s: 60
   # Maximum upward change per cycle.
-  max_increase_per_cycle_w: 150
+  battery_max_increase_per_cycle_w: 150
   # Maximum downward change per cycle.
-  max_decrease_per_cycle_w: 300
+  battery_max_decrease_per_cycle_w: 300
   # Faster downward change allowed during strong export.
-  emergency_max_decrease_per_cycle_w: 500
+  battery_emergency_max_decrease_per_cycle_w: 500
+
+  # Minimum trim-actuator target change before a write is sent.
+  # inverter_min_change_w: 10
+  # Minimum time between trim-actuator writes.
+  # inverter_min_write_interval_s: 15
+  # Maximum trim-actuator upward change per cycle.
+  # inverter_max_increase_per_cycle_w: 300
+  # Maximum trim-actuator downward change per cycle.
+  # inverter_max_decrease_per_cycle_w: 300
+  # Faster trim-actuator downward change allowed during strong export.
+  # inverter_emergency_max_decrease_per_cycle_w: 500
 
   # Stop-output buffer above the discharge floor.
   soc_stop_buffer_pct: 3

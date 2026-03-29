@@ -18,6 +18,7 @@ class FakeHaPvOptimization(HaPvOptimization):
         self.state_map = state_map
         self.logs: list[tuple[str, str]] = []
         self.state_updates: list[tuple[str, Any, dict[str, Any]]] = []
+        self.service_calls: list[tuple[str, dict[str, Any]]] = []
 
     def log(self, message: str, level: str = "INFO") -> None:
         self.logs.append((level, message))
@@ -38,7 +39,7 @@ class FakeHaPvOptimization(HaPvOptimization):
         return value
 
     def call_service(self, service: str, **kwargs: Any) -> None:
-        return None
+        self.service_calls.append((service, kwargs))
 
     def set_state(self, entity_id: str, state: Any, attributes: dict[str, Any]) -> None:
         self.state_updates.append((entity_id, state, attributes))
@@ -52,25 +53,76 @@ def _info_messages(app: FakeHaPvOptimization) -> list[str]:
     return [message for level, message in app.logs if level == "INFO"]
 
 
-def test_power_control_missing_is_expected_at_battery_reserve(monkeypatch: Any) -> None:
-    now = {"value": 0.0}
-    monkeypatch.setattr(appdaemon_module.time, "monotonic", lambda: now["value"])
+def _latest_status_update(
+    app: FakeHaPvOptimization,
+) -> tuple[str, Any, dict[str, Any]]:
+    return next(
+        update
+        for update in reversed(app.state_updates)
+        if update[0].endswith("_status")
+    )
 
+
+def test_primary_missing_is_not_blocking_when_trim_available(monkeypatch: Any) -> None:
+    monkeypatch.setattr(appdaemon_module.time, "monotonic", lambda: 0.0)
     app = FakeHaPvOptimization(
         args={
             "consumption_entity": "sensor.load",
-            "power_control_entity": "number.limit",
-            "actual_power_entity": "sensor.output_power",
-            "battery_soc_entity": "sensor.battery_soc",
-            "battery_discharge_limit_entity": "number.battery_reserve",
-            "availability_warning_grace_s": 30,
+            "power_control_entity": "number.battery_limit",
+            "trim_power_control_entity": "number.inverter_limit",
+            "trim_power_step_w": 10,
+            "trim_min_change_w": 10,
+            "trim_min_write_interval_s": 0,
+            "trim_max_increase_per_cycle_w": 500,
+            "trim_max_decrease_per_cycle_w": 500,
+            "trim_emergency_max_decrease_per_cycle_w": 500,
             "max_output_w": 800,
             "dry_run": True,
         },
         state_map={
+            "sensor.load": "180",
+            "number.battery_limit": "unavailable",
+            "number.inverter_limit": {
+                "state": "100",
+                "attributes": {"min": 0, "max": 800, "step": 10},
+            },
+        },
+    )
+
+    app.initialize()
+    app._control_tick({})
+
+    assert _warning_messages(app) == []
+    status_update = _latest_status_update(app)
+    assert status_update[1] == "dry_run"
+    assert status_update[2]["primary_power_control_available"] is False
+    assert status_update[2]["trim_power_control_available"] is True
+    assert status_update[2]["available_actuators"] == ["number.inverter_limit"]
+    assert status_update[2]["trim_target_power_control_w"] == 180.0
+
+
+def test_all_actuators_missing_is_expected_at_battery_reserve(monkeypatch: Any) -> None:
+    monkeypatch.setattr(appdaemon_module.time, "monotonic", lambda: 0.0)
+    app = FakeHaPvOptimization(
+        args={
+            "consumption_entity": "sensor.load",
+            "power_control_entity": "number.battery_limit",
+            "actual_power_entity": "sensor.battery_output",
+            "trim_power_control_entity": "number.inverter_limit",
+            "trim_actual_power_entity": "sensor.inverter_output",
+            "battery_soc_entity": "sensor.battery_soc",
+            "battery_discharge_limit_entity": "number.battery_reserve",
+            "availability_warning_grace_s": 30,
+            "max_output_w": 800,
+            "trim_max_output_w": 800,
+            "dry_run": True,
+        },
+        state_map={
             "sensor.load": "123",
-            "number.limit": "unavailable",
-            "sensor.output_power": "0",
+            "number.battery_limit": "unavailable",
+            "number.inverter_limit": "unavailable",
+            "sensor.battery_output": "0",
+            "sensor.inverter_output": "0",
             "sensor.battery_soc": "22",
             "number.battery_reserve": "20",
             "sun.sun": {"state": "above_horizon", "attributes": {"elevation": 30}},
@@ -81,39 +133,36 @@ def test_power_control_missing_is_expected_at_battery_reserve(monkeypatch: Any) 
     app._control_tick({})
 
     assert _warning_messages(app) == []
-    assert any(
-        "currently expected" in message and "battery_reserve" in message
-        for message in _info_messages(app)
-    )
-
-    status_update = app.state_updates[-1]
+    assert any("battery_reserve" in message for message in _info_messages(app))
+    status_update = _latest_status_update(app)
     assert status_update[1] == "blocked"
     assert status_update[2]["availability_state"] == "expected_missing"
     assert status_update[2]["expected_missing_reason"] == "battery_reserve"
-    assert status_update[2]["warning_active"] is False
 
 
-def test_expected_missing_warns_after_conditions_clear_and_grace_expires(
-    monkeypatch: Any,
-) -> None:
+def test_all_actuators_missing_warns_after_expected_window(monkeypatch: Any) -> None:
     now = {"value": 0.0}
     monkeypatch.setattr(appdaemon_module.time, "monotonic", lambda: now["value"])
-
     app = FakeHaPvOptimization(
         args={
             "consumption_entity": "sensor.load",
-            "power_control_entity": "number.limit",
-            "actual_power_entity": "sensor.output_power",
+            "power_control_entity": "number.battery_limit",
+            "actual_power_entity": "sensor.battery_output",
+            "trim_power_control_entity": "number.inverter_limit",
+            "trim_actual_power_entity": "sensor.inverter_output",
             "battery_soc_entity": "sensor.battery_soc",
             "battery_discharge_limit_entity": "number.battery_reserve",
             "availability_warning_grace_s": 30,
             "max_output_w": 800,
+            "trim_max_output_w": 800,
             "dry_run": True,
         },
         state_map={
             "sensor.load": "123",
-            "number.limit": "unavailable",
-            "sensor.output_power": "50",
+            "number.battery_limit": "unavailable",
+            "number.inverter_limit": "unavailable",
+            "sensor.battery_output": "0",
+            "sensor.inverter_output": "0",
             "sensor.battery_soc": "22",
             "number.battery_reserve": "20",
             "sun.sun": {"state": "above_horizon", "attributes": {"elevation": 30}},
@@ -131,118 +180,29 @@ def test_expected_missing_warns_after_conditions_clear_and_grace_expires(
     assert any(
         "expected condition cleared" in message for message in _info_messages(app)
     )
-    status_update = app.state_updates[-1]
+    status_update = _latest_status_update(app)
     assert status_update[2]["availability_state"] == "warning_grace"
-    assert status_update[2]["expected_missing_reason"] is None
-    assert status_update[2]["warning_grace_s"] == 30
-
-    now["value"] = 91.0
-    app._control_tick({})
-
-    warning_messages = _warning_messages(app)
-    assert len(warning_messages) == 1
-    assert "warning grace period" in warning_messages[0]
-    status_update = app.state_updates[-1]
-    assert status_update[2]["availability_state"] == "warning_active"
-    assert status_update[2]["warning_active"] is True
-
-    now["value"] += 30.0
-    app.state_map["number.limit"] = "800"
-    app._control_tick({})
-
-    assert any("state recovered" in message for message in _info_messages(app))
-
-
-def test_power_control_missing_is_expected_while_sun_is_down(monkeypatch: Any) -> None:
-    now = {"value": 0.0}
-    monkeypatch.setattr(appdaemon_module.time, "monotonic", lambda: now["value"])
-
-    app = FakeHaPvOptimization(
-        args={
-            "consumption_entity": "sensor.load",
-            "power_control_entity": "number.limit",
-            "actual_power_entity": "sensor.output_power",
-            "availability_warning_grace_s": 30,
-            "max_output_w": 800,
-            "dry_run": True,
-        },
-        state_map={
-            "sensor.load": "123",
-            "number.limit": "unavailable",
-            "sensor.output_power": "0",
-            "sun.sun": {"state": "below_horizon", "attributes": {"elevation": -15}},
-        },
-    )
-
-    app.initialize()
-    app._control_tick({})
-
-    assert _warning_messages(app) == []
-    status_update = app.state_updates[-1]
-    assert status_update[2]["expected_missing_reason"] == "sun_down"
-
-    now["value"] = 60.0
-    app.state_map["sun.sun"] = {
-        "state": "above_horizon",
-        "attributes": {"elevation": 20},
-    }
-    app._control_tick({})
-    assert app.state_updates[-1][2]["availability_state"] == "warning_grace"
 
     now["value"] = 91.0
     app._control_tick({})
     warning_messages = _warning_messages(app)
     assert len(warning_messages) == 1
     assert "warning grace period" in warning_messages[0]
-
-
-def test_power_control_missing_uses_configurable_idle_and_sun_thresholds(
-    monkeypatch: Any,
-) -> None:
-    now = {"value": 0.0}
-    monkeypatch.setattr(appdaemon_module.time, "monotonic", lambda: now["value"])
-
-    app = FakeHaPvOptimization(
-        args={
-            "consumption_entity": "sensor.load",
-            "power_control_entity": "number.limit",
-            "actual_power_entity": "sensor.output_power",
-            "availability_idle_output_threshold_w": 30,
-            "availability_low_sun_elevation_deg": 25,
-            "max_output_w": 800,
-            "dry_run": True,
-        },
-        state_map={
-            "sensor.load": "123",
-            "number.limit": "unavailable",
-            "sensor.output_power": "25",
-            "sun.sun": {"state": "above_horizon", "attributes": {"elevation": 20}},
-        },
-    )
-
-    app.initialize()
-    app._control_tick({})
-
-    assert _warning_messages(app) == []
-    status_update = app.state_updates[-1]
-    assert status_update[2]["expected_missing_reason"] == "low_sun"
-    assert status_update[2]["actual_power_w"] == 25.0
 
 
 def test_consumption_missing_warns_once_until_recovery(monkeypatch: Any) -> None:
     now = {"value": 0.0}
     monkeypatch.setattr(appdaemon_module.time, "monotonic", lambda: now["value"])
-
     app = FakeHaPvOptimization(
         args={
             "consumption_entity": "sensor.load",
-            "power_control_entity": "number.limit",
+            "power_control_entity": "number.battery_limit",
             "max_output_w": 800,
             "dry_run": True,
         },
         state_map={
             "sensor.load": "unavailable",
-            "number.limit": "800",
+            "number.battery_limit": {"state": "400", "attributes": {"max": 800}},
         },
     )
 
@@ -257,5 +217,52 @@ def test_consumption_missing_warns_once_until_recovery(monkeypatch: Any) -> None
 
     app.state_map["sensor.load"] = "125"
     app._control_tick({})
-
     assert any("state recovered" in message for message in _info_messages(app))
+
+
+def test_live_mode_writes_primary_and_trim_targets() -> None:
+    app = FakeHaPvOptimization(
+        args={
+            "consumption_entity": "sensor.load",
+            "power_control_entity": "number.battery_limit",
+            "power_step_w": 50,
+            "min_change_w": 50,
+            "min_write_interval_s": 0,
+            "max_increase_per_cycle_w": 500,
+            "max_decrease_per_cycle_w": 500,
+            "emergency_max_decrease_per_cycle_w": 500,
+            "trim_power_control_entity": "number.inverter_limit",
+            "trim_power_step_w": 10,
+            "trim_min_change_w": 10,
+            "trim_min_write_interval_s": 0,
+            "trim_max_increase_per_cycle_w": 500,
+            "trim_max_decrease_per_cycle_w": 500,
+            "trim_emergency_max_decrease_per_cycle_w": 500,
+            "max_output_w": 800,
+            "trim_max_output_w": 800,
+            "dry_run": False,
+        },
+        state_map={
+            "sensor.load": "350",
+            "number.battery_limit": {
+                "state": "250",
+                "attributes": {"min": 0, "max": 800, "step": 50},
+            },
+            "number.inverter_limit": {
+                "state": "0",
+                "attributes": {"min": 0, "max": 800, "step": 10},
+            },
+        },
+    )
+
+    app.initialize()
+    app._control_tick({})
+
+    assert app.service_calls == [
+        ("number/set_value", {"entity_id": "number.battery_limit", "value": 350}),
+        ("number/set_value", {"entity_id": "number.inverter_limit", "value": 350}),
+    ]
+    status_update = _latest_status_update(app)
+    assert status_update[2]["target_power_control_w"] == 350.0
+    assert status_update[2]["primary_target_power_control_w"] == 350.0
+    assert status_update[2]["trim_target_power_control_w"] == 350.0

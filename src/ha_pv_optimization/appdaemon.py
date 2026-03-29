@@ -7,6 +7,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from .core import (
+    ActuatorConfig,
+    ActuatorInputs,
+    ActuatorResult,
     ControllerConfig,
     ControllerInputs,
     ControllerResult,
@@ -64,6 +67,14 @@ def _as_non_empty_str(value: Any) -> str | None:
     return text or None
 
 
+def _first_non_empty_str(*values: Any) -> str | None:
+    for value in values:
+        text = _as_non_empty_str(value)
+        if text is not None:
+            return text
+    return None
+
+
 def _format_duration(duration_s: float) -> str:
     total_seconds = max(0, int(round(duration_s)))
     minutes, seconds = divmod(total_seconds, 60)
@@ -88,16 +99,23 @@ def _default_power_control_service(entity_id: str) -> str | None:
 
 
 @dataclass(frozen=True)
-class EntityConfig:
-    consumption_entity: str
+class ActuatorEntityConfig:
+    slot: str
     power_control_entity: str
-    net_consumption_entity: str | None
-    actual_power_entity: str | None
-    battery_soc_entity: str | None
-    battery_discharge_limit_entity: str | None
     power_control_service: str
     power_control_value_key: str
     power_control_label: str
+    actual_power_entity: str | None
+
+
+@dataclass(frozen=True)
+class EntityConfig:
+    consumption_entity: str
+    net_consumption_entity: str | None
+    battery_soc_entity: str | None
+    battery_discharge_limit_entity: str | None
+    primary_actuator: ActuatorEntityConfig
+    trim_actuator: ActuatorEntityConfig | None
     debug_entity_prefix: str
 
 
@@ -114,8 +132,14 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         self.config = self._build_controller_config()
         self.availability = self._build_availability_config()
         self.controller = PowerControllerCore(self.config)
-        self.last_write_monotonic: float | None = None
-        self.last_write_iso: str | None = None
+        self.last_write_monotonic: dict[str, float | None] = {
+            "primary": None,
+            "trim": None,
+        }
+        self.last_write_iso: dict[str, str | None] = {
+            "primary": None,
+            "trim": None,
+        }
         self.missing_required_entities: tuple[str, ...] | None = None
         self.missing_required_since_monotonic: float | None = None
         self.missing_required_since_iso: str | None = None
@@ -124,11 +148,15 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         self.missing_required_unexpected_since_iso: str | None = None
         self.missing_required_warning_active = False
 
+        trim_label = None
+        if self.entities.trim_actuator is not None:
+            trim_label = self.entities.trim_actuator.power_control_label
+
         self.log(
             "Initialized ha-pv-optimization controller"
             f" (consumption={self.entities.consumption_entity},"
-            f" power_control={self.entities.power_control_entity},"
-            f" service={self.entities.power_control_service},"
+            f" battery={self.entities.primary_actuator.power_control_label},"
+            f" inverter={trim_label},"
             f" dry_run={self.config.dry_run})"
         )
 
@@ -136,74 +164,106 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         self.run_every(self._control_tick, start, self.config.control_interval_s)
 
     def _build_entity_config(self) -> EntityConfig:
-        consumption_entity = self._require_entity("consumption_entity")
-        power_control_entity = self._require_entity("power_control_entity")
-        power_control_service = _as_non_empty_str(
-            self.args.get("power_control_service")
+        primary_actuator = self._build_actuator_entity_config(
+            prefix="",
+            alias_prefix="battery_",
+            slot="primary",
+            required=True,
+        )
+        assert primary_actuator is not None
+
+        return EntityConfig(
+            consumption_entity=self._require_entity("consumption_entity"),
+            net_consumption_entity=_as_non_empty_str(
+                self.args.get("net_consumption_entity")
+            ),
+            battery_soc_entity=_as_non_empty_str(self.args.get("battery_soc_entity")),
+            battery_discharge_limit_entity=_as_non_empty_str(
+                self.args.get("battery_discharge_limit_entity")
+            ),
+            primary_actuator=primary_actuator,
+            trim_actuator=self._build_actuator_entity_config(
+                prefix="trim_",
+                alias_prefix="inverter_",
+                slot="trim",
+                required=False,
+            ),
+            debug_entity_prefix=_as_non_empty_str(self.args.get("debug_entity_prefix"))
+            or "sensor.ha_pv_optimization",
+        )
+
+    def _build_actuator_entity_config(
+        self,
+        prefix: str,
+        alias_prefix: str,
+        slot: str,
+        required: bool,
+    ) -> ActuatorEntityConfig | None:
+        entity_key = f"{prefix}power_control_entity"
+        alias_entity_key = f"{alias_prefix}power_control_entity"
+        power_control_entity = _first_non_empty_str(
+            self.args.get(alias_entity_key),
+            self.args.get(entity_key),
+        )
+        if power_control_entity is None:
+            if required:
+                raise ValueError(
+                    f"Missing required AppDaemon argument: `{alias_entity_key}`"
+                    f" (or legacy `{entity_key}`)."
+                )
+            return None
+
+        service_key = f"{prefix}power_control_service"
+        alias_service_key = f"{alias_prefix}power_control_service"
+        power_control_service = _first_non_empty_str(
+            self.args.get(alias_service_key),
+            self.args.get(service_key),
         )
         if power_control_service is None:
             power_control_service = _default_power_control_service(power_control_entity)
         if power_control_service is None:
             raise ValueError(
-                "Set `power_control_service` when `power_control_entity` "
-                "is not a `number.*` or `input_number.*` entity."
+                f"Set `{alias_service_key}` (or legacy `{service_key}`) when "
+                f"`{alias_entity_key}` is not a `number.*` or `input_number.*` "
+                "entity."
             )
 
-        return EntityConfig(
-            consumption_entity=consumption_entity,
+        return ActuatorEntityConfig(
+            slot=slot,
             power_control_entity=power_control_entity,
-            net_consumption_entity=_as_non_empty_str(
-                self.args.get("net_consumption_entity")
-            ),
-            actual_power_entity=_as_non_empty_str(self.args.get("actual_power_entity")),
-            battery_soc_entity=_as_non_empty_str(self.args.get("battery_soc_entity")),
-            battery_discharge_limit_entity=_as_non_empty_str(
-                self.args.get("battery_discharge_limit_entity")
-            ),
             power_control_service=power_control_service,
-            power_control_value_key=_as_non_empty_str(
-                self.args.get("power_control_value_key")
+            power_control_value_key=_first_non_empty_str(
+                self.args.get(f"{alias_prefix}power_control_value_key"),
+                self.args.get(f"{prefix}power_control_value_key"),
             )
             or "value",
-            power_control_label=_as_non_empty_str(self.args.get("power_control_label"))
+            power_control_label=_first_non_empty_str(
+                self.args.get(f"{alias_prefix}power_control_label"),
+                self.args.get(f"{prefix}power_control_label"),
+            )
             or power_control_entity,
-            debug_entity_prefix=_as_non_empty_str(self.args.get("debug_entity_prefix"))
-            or "sensor.ha_pv_optimization",
+            actual_power_entity=_first_non_empty_str(
+                self.args.get(f"{alias_prefix}actual_power_entity"),
+                self.args.get(f"{prefix}actual_power_entity"),
+            ),
         )
 
     def _build_controller_config(self) -> ControllerConfig:
-        actuator_attributes = self._read_entity_attributes(
-            self.entities.power_control_entity
-        )
-        inferred_min_output_w = _as_float(actuator_attributes.get("min"))
-        inferred_max_output_w = _as_float(actuator_attributes.get("max"))
-        inferred_step_w = _as_float(actuator_attributes.get("step"))
-
-        min_output_w = self._get_float(
-            "min_output_w",
-            0.0 if inferred_min_output_w is None else inferred_min_output_w,
-        )
-        max_output_w = _as_float(self.args.get("max_output_w"))
-        if max_output_w is None:
-            max_output_w = inferred_max_output_w
-        if max_output_w is None:
-            raise ValueError(
-                "Set `max_output_w` or use a power-control entity "
-                "that exposes a numeric `max` attribute."
-            )
-
-        power_step_w = self._get_float(
-            "power_step_w",
-            50.0 if inferred_step_w is None else inferred_step_w,
-        )
-        min_change_w = self._get_float("min_change_w", power_step_w)
-
-        if max_output_w < min_output_w:
-            raise ValueError(
-                "`max_output_w` must be greater than or equal to `min_output_w`."
+        trim_actuator = None
+        if self.entities.trim_actuator is not None:
+            trim_actuator = self._build_actuator_config(
+                entity_config=self.entities.trim_actuator,
+                prefix="trim_",
+                alias_prefix="inverter_",
             )
 
         return ControllerConfig(
+            primary_actuator=self._build_actuator_config(
+                entity_config=self.entities.primary_actuator,
+                prefix="",
+                alias_prefix="battery_",
+            ),
+            trim_actuator=trim_actuator,
             control_interval_s=self._get_float("control_interval_s", 30.0),
             consumption_ema_tau_s=self._get_float("consumption_ema_tau_s", 75.0),
             net_ema_tau_s=self._get_float("net_ema_tau_s", 45.0),
@@ -213,17 +273,6 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             fast_export_threshold_w=self._get_float("fast_export_threshold_w", -80.0),
             import_correction_gain=self._get_float("import_correction_gain", 0.35),
             export_correction_gain=self._get_float("export_correction_gain", 1.0),
-            min_output_w=min_output_w,
-            max_output_w=max_output_w,
-            power_step_w=power_step_w,
-            min_change_w=min_change_w,
-            min_write_interval_s=self._get_float("min_write_interval_s", 60.0),
-            max_increase_per_cycle_w=self._get_float("max_increase_per_cycle_w", 150.0),
-            max_decrease_per_cycle_w=self._get_float("max_decrease_per_cycle_w", 300.0),
-            emergency_max_decrease_per_cycle_w=self._get_float(
-                "emergency_max_decrease_per_cycle_w",
-                500.0,
-            ),
             soc_stop_buffer_pct=self._get_float("soc_stop_buffer_pct", 3.0),
             soc_full_power_buffer_pct=self._get_float(
                 "soc_full_power_buffer_pct", 10.0
@@ -231,6 +280,113 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             soc_min_derate_factor=self._get_float("soc_min_derate_factor", 0.25),
             net_export_negative=_as_bool(self.args.get("net_export_negative"), True),
             dry_run=_as_bool(self.args.get("dry_run"), True),
+        )
+
+    def _build_actuator_config(
+        self,
+        entity_config: ActuatorEntityConfig,
+        prefix: str,
+        alias_prefix: str,
+    ) -> ActuatorConfig:
+        actuator_attributes = self._read_entity_attributes(
+            entity_config.power_control_entity
+        )
+        inferred_min_output_w = _as_float(actuator_attributes.get("min"))
+        inferred_max_output_w = _as_float(actuator_attributes.get("max"))
+        inferred_step_w = _as_float(actuator_attributes.get("step"))
+
+        alias_min_output_w = _as_float(self.args.get(f"{alias_prefix}min_output_w"))
+        legacy_min_output_w = _as_float(self.args.get(f"{prefix}min_output_w"))
+        min_output_w = (
+            alias_min_output_w
+            if alias_min_output_w is not None
+            else legacy_min_output_w
+            if legacy_min_output_w is not None
+            else 0.0
+            if inferred_min_output_w is None
+            else inferred_min_output_w
+        )
+
+        max_output_w = _as_float(self.args.get(f"{alias_prefix}max_output_w"))
+        if max_output_w is None:
+            max_output_w = _as_float(self.args.get(f"{prefix}max_output_w"))
+        if max_output_w is None:
+            max_output_w = inferred_max_output_w
+        if max_output_w is None:
+            raise ValueError(
+                f"Set `{alias_prefix}max_output_w` (or legacy `{prefix}max_output_w`)"
+                " or use a power-control entity that exposes a numeric `max`"
+                " attribute."
+            )
+
+        power_step_w = _as_float(self.args.get(f"{alias_prefix}power_step_w"))
+        if power_step_w is None:
+            power_step_w = _as_float(self.args.get(f"{prefix}power_step_w"))
+        if power_step_w is None:
+            power_step_w = 50.0 if inferred_step_w is None else inferred_step_w
+
+        min_change_w = _as_float(self.args.get(f"{alias_prefix}min_change_w"))
+        if min_change_w is None:
+            min_change_w = _as_float(self.args.get(f"{prefix}min_change_w"))
+        if min_change_w is None:
+            min_change_w = power_step_w
+
+        min_write_interval_s = _as_float(
+            self.args.get(f"{alias_prefix}min_write_interval_s")
+        )
+        if min_write_interval_s is None:
+            min_write_interval_s = _as_float(
+                self.args.get(f"{prefix}min_write_interval_s")
+            )
+        if min_write_interval_s is None:
+            min_write_interval_s = 60.0
+
+        max_increase_per_cycle_w = _as_float(
+            self.args.get(f"{alias_prefix}max_increase_per_cycle_w")
+        )
+        if max_increase_per_cycle_w is None:
+            max_increase_per_cycle_w = _as_float(
+                self.args.get(f"{prefix}max_increase_per_cycle_w")
+            )
+        if max_increase_per_cycle_w is None:
+            max_increase_per_cycle_w = 150.0
+
+        max_decrease_per_cycle_w = _as_float(
+            self.args.get(f"{alias_prefix}max_decrease_per_cycle_w")
+        )
+        if max_decrease_per_cycle_w is None:
+            max_decrease_per_cycle_w = _as_float(
+                self.args.get(f"{prefix}max_decrease_per_cycle_w")
+            )
+        if max_decrease_per_cycle_w is None:
+            max_decrease_per_cycle_w = 300.0
+
+        emergency_max_decrease_per_cycle_w = _as_float(
+            self.args.get(f"{alias_prefix}emergency_max_decrease_per_cycle_w")
+        )
+        if emergency_max_decrease_per_cycle_w is None:
+            emergency_max_decrease_per_cycle_w = _as_float(
+                self.args.get(f"{prefix}emergency_max_decrease_per_cycle_w")
+            )
+        if emergency_max_decrease_per_cycle_w is None:
+            emergency_max_decrease_per_cycle_w = 500.0
+
+        if max_output_w < min_output_w:
+            raise ValueError(
+                f"`{alias_prefix}max_output_w` must be greater than or equal to "
+                f"`{alias_prefix}min_output_w`."
+            )
+
+        return ActuatorConfig(
+            label=entity_config.power_control_label,
+            min_output_w=min_output_w,
+            max_output_w=max_output_w,
+            power_step_w=power_step_w,
+            min_change_w=min_change_w,
+            min_write_interval_s=min_write_interval_s,
+            max_increase_per_cycle_w=max_increase_per_cycle_w,
+            max_decrease_per_cycle_w=max_decrease_per_cycle_w,
+            emergency_max_decrease_per_cycle_w=emergency_max_decrease_per_cycle_w,
         )
 
     def _build_availability_config(self) -> AvailabilityConfig:
@@ -272,73 +428,73 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
 
     def _control_tick(self, kwargs: dict[str, Any]) -> None:
         consumption_w = self._read_entity_float(self.entities.consumption_entity)
-        current_limit_w = self._read_entity_float(self.entities.power_control_entity)
-        actual_power_w = self._read_entity_float(self.entities.actual_power_entity)
+        primary_actual_power_w = self._read_entity_float(
+            self.entities.primary_actuator.actual_power_entity
+        )
+        trim_actual_power_w = self._read_trim_actual_power()
+        primary_inputs = self._read_actuator_inputs(
+            entity_config=self.entities.primary_actuator,
+            actual_power_w=primary_actual_power_w,
+            last_write_monotonic=self.last_write_monotonic["primary"],
+        )
+        trim_inputs = self._read_trim_inputs(trim_actual_power_w)
         soc_pct = self._read_entity_float(self.entities.battery_soc_entity)
         discharge_limit_pct = self._read_entity_float(
             self.entities.battery_discharge_limit_entity
         )
 
-        if self._handle_missing_required_entities(
+        if self._handle_missing_required_state(
             consumption_w=consumption_w,
-            current_limit_w=current_limit_w,
-            actual_power_w=actual_power_w,
+            primary_inputs=primary_inputs,
+            trim_inputs=trim_inputs,
+            primary_actual_power_w=primary_actual_power_w,
+            trim_actual_power_w=trim_actual_power_w,
             soc_pct=soc_pct,
             discharge_limit_pct=discharge_limit_pct,
         ):
             return
 
         assert consumption_w is not None
-        assert current_limit_w is not None
-
-        now_monotonic = time.monotonic()
-        seconds_since_last_write = None
-        if self.last_write_monotonic is not None:
-            seconds_since_last_write = now_monotonic - self.last_write_monotonic
 
         inputs = ControllerInputs(
             consumption_w=consumption_w,
-            current_limit_w=current_limit_w,
+            primary_actuator=primary_inputs,
+            trim_actuator=trim_inputs,
             net_consumption_w=self._read_entity_float(
                 self.entities.net_consumption_entity
             ),
-            actual_power_w=actual_power_w,
             soc_pct=soc_pct,
             discharge_limit_pct=discharge_limit_pct,
-            seconds_since_last_write=seconds_since_last_write,
         )
         result = self.controller.step(inputs)
 
-        if result.action == "write":
-            self.call_service(
-                self.entities.power_control_service,
-                entity_id=self.entities.power_control_entity,
-                **{self.entities.power_control_value_key: int(result.target_limit_w)},
+        self._apply_actuator_result(
+            entity_config=self.entities.primary_actuator,
+            actuator_result=result.primary_actuator,
+        )
+        if self.entities.trim_actuator is not None and result.trim_actuator is not None:
+            self._apply_actuator_result(
+                entity_config=self.entities.trim_actuator,
+                actuator_result=result.trim_actuator,
             )
-            self.last_write_monotonic = now_monotonic
-            self.last_write_iso = dt.datetime.now(dt.UTC).isoformat()
+
+        if result.action in {"write", "dry_run"}:
+            action_label = "Dry-run" if result.action == "dry_run" else "Updated"
             self.log(
-                "Updated power control entity"
-                f" entity={self.entities.power_control_entity}"
-                f" service={self.entities.power_control_service}"
-                f" target={int(result.target_limit_w)}W"
+                f"{action_label} control targets"
+                f" total={int(result.target_limit_w)}W"
+                f" desired={int(result.desired_target_w)}W"
                 f" current={int(result.current_limit_w)}W"
-                f" reason={result.reason}"
-            )
-        elif result.action == "dry_run":
-            self.log(
-                "Dry-run power control update"
-                f" entity={self.entities.power_control_entity}"
-                f" service={self.entities.power_control_service}"
-                f" target={int(result.target_limit_w)}W"
-                f" current={int(result.current_limit_w)}W"
+                f" battery={self._format_actuator_summary(result.primary_actuator)}"
+                f" inverter={self._format_trim_summary(result.trim_actuator)}"
                 f" reason={result.reason}"
             )
 
         self.log(
             "Control cycle"
             f" action={result.action}"
-            f" target={int(result.target_limit_w)}W"
+            f" total_target={int(result.target_limit_w)}W"
+            f" desired={result.desired_target_w:.1f}W"
             f" consumption={result.effective_consumption_w:.1f}W"
             f" smoothed={result.smoothed_consumption_w:.1f}W"
             f" net={result.raw_net_consumption_w}"
@@ -348,31 +504,98 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
 
         self._publish_result(result, inputs)
 
-    def _handle_missing_required_entities(
+    def _read_actuator_inputs(
+        self,
+        entity_config: ActuatorEntityConfig,
+        actual_power_w: float | None,
+        last_write_monotonic: float | None,
+    ) -> ActuatorInputs | None:
+        current_limit_w = self._read_entity_float(entity_config.power_control_entity)
+        if current_limit_w is None:
+            return None
+
+        seconds_since_last_write = None
+        if last_write_monotonic is not None:
+            seconds_since_last_write = time.monotonic() - last_write_monotonic
+
+        return ActuatorInputs(
+            current_limit_w=current_limit_w,
+            actual_power_w=actual_power_w,
+            seconds_since_last_write=seconds_since_last_write,
+        )
+
+    def _read_trim_actual_power(self) -> float | None:
+        if self.entities.trim_actuator is None:
+            return None
+        return self._read_entity_float(self.entities.trim_actuator.actual_power_entity)
+
+    def _read_trim_inputs(
+        self, trim_actual_power_w: float | None
+    ) -> ActuatorInputs | None:
+        if self.entities.trim_actuator is None:
+            return None
+        return self._read_actuator_inputs(
+            entity_config=self.entities.trim_actuator,
+            actual_power_w=trim_actual_power_w,
+            last_write_monotonic=self.last_write_monotonic["trim"],
+        )
+
+    def _apply_actuator_result(
+        self,
+        entity_config: ActuatorEntityConfig,
+        actuator_result: ActuatorResult,
+    ) -> None:
+        if actuator_result.action != "write":
+            return
+
+        self.call_service(
+            entity_config.power_control_service,
+            entity_id=entity_config.power_control_entity,
+            **{
+                entity_config.power_control_value_key: int(
+                    actuator_result.target_limit_w
+                )
+            },
+        )
+        now_monotonic = time.monotonic()
+        now_iso = dt.datetime.now(dt.UTC).isoformat()
+        self.last_write_monotonic[entity_config.slot] = now_monotonic
+        self.last_write_iso[entity_config.slot] = now_iso
+
+    def _handle_missing_required_state(
         self,
         consumption_w: float | None,
-        current_limit_w: float | None,
-        actual_power_w: float | None,
+        primary_inputs: ActuatorInputs | None,
+        trim_inputs: ActuatorInputs | None,
+        primary_actual_power_w: float | None,
+        trim_actual_power_w: float | None,
         soc_pct: float | None,
         discharge_limit_pct: float | None,
     ) -> bool:
         missing_entities: list[str] = []
         if consumption_w is None:
             missing_entities.append("consumption")
-        if current_limit_w is None:
-            missing_entities.append("power_control")
+
+        available_actuators = self._available_actuator_labels(
+            primary_inputs, trim_inputs
+        )
+        if not available_actuators:
+            missing_entities.append("battery_power_control")
+            if self.entities.trim_actuator is not None:
+                missing_entities.append("inverter_power_control")
 
         if not missing_entities:
             self._log_required_entity_recovery()
             return False
 
-        expected_reason: str | None = None
+        expected_reason = None
         sun_state: str | None = None
         sun_elevation_deg: float | None = None
-        if missing_entities == ["power_control"]:
+        if "consumption" not in missing_entities and not available_actuators:
             sun_state, sun_elevation_deg = self._read_sun_status()
-            expected_reason = self._expected_missing_power_control_reason(
-                actual_power_w=actual_power_w,
+            expected_reason = self._expected_missing_reason(
+                primary_actual_power_w=primary_actual_power_w,
+                trim_actual_power_w=trim_actual_power_w,
                 soc_pct=soc_pct,
                 discharge_limit_pct=discharge_limit_pct,
                 sun_state=sun_state,
@@ -389,7 +612,8 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
                 now_monotonic=now_monotonic,
                 now_iso=now_iso,
                 consumption_w=consumption_w,
-                current_limit_w=current_limit_w,
+                primary_inputs=primary_inputs,
+                trim_inputs=trim_inputs,
             )
         else:
             self._update_missing_required_episode(
@@ -402,15 +626,22 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             state="blocked",
             reason="missing_required_entity",
             missing_entities=missing_entities,
+            available_actuators=available_actuators,
             availability_state=self._missing_required_availability_state(),
             expected_missing_reason=self.missing_required_expected_reason,
             warning_active=self.missing_required_warning_active,
             missing_since_utc=self.missing_required_since_iso,
             unexpected_missing_since_utc=self.missing_required_unexpected_since_iso,
             warning_grace_s=self.availability.warning_grace_s,
+            primary_power_control_available=primary_inputs is not None,
+            trim_power_control_available=trim_inputs is not None,
+            battery_power_control_available=primary_inputs is not None,
+            inverter_power_control_available=trim_inputs is not None,
             raw_consumption_w=consumption_w,
-            current_limit_w=current_limit_w,
-            actual_power_w=actual_power_w,
+            primary_actual_power_w=primary_actual_power_w,
+            trim_actual_power_w=trim_actual_power_w,
+            battery_actual_power_w=primary_actual_power_w,
+            inverter_actual_power_w=trim_actual_power_w,
             battery_soc_pct=soc_pct,
             battery_discharge_limit_pct=discharge_limit_pct,
             sun_state=sun_state,
@@ -419,6 +650,18 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
 
         return True
 
+    def _available_actuator_labels(
+        self,
+        primary_inputs: ActuatorInputs | None,
+        trim_inputs: ActuatorInputs | None,
+    ) -> list[str]:
+        labels: list[str] = []
+        if primary_inputs is not None:
+            labels.append(self.entities.primary_actuator.power_control_label)
+        if trim_inputs is not None and self.entities.trim_actuator is not None:
+            labels.append(self.entities.trim_actuator.power_control_label)
+        return labels
+
     def _start_missing_required_episode(
         self,
         missing_key: tuple[str, ...],
@@ -426,7 +669,8 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         now_monotonic: float,
         now_iso: str,
         consumption_w: float | None,
-        current_limit_w: float | None,
+        primary_inputs: ActuatorInputs | None,
+        trim_inputs: ActuatorInputs | None,
     ) -> None:
         self.missing_required_entities = missing_key
         self.missing_required_since_monotonic = now_monotonic
@@ -437,12 +681,17 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             self.missing_required_unexpected_since_monotonic = now_monotonic
             self.missing_required_unexpected_since_iso = now_iso
             self.missing_required_warning_active = True
+            trim_entity = None
+            if self.entities.trim_actuator is not None:
+                trim_entity = self.entities.trim_actuator.power_control_entity
             self.log(
                 "Missing required controller entity state"
                 f" (missing={','.join(missing_key)},"
                 f" consumption={self.entities.consumption_entity}:{consumption_w},"
-                f" power_control={self.entities.power_control_entity}:"
-                f"{current_limit_w})",
+                f" battery={self.entities.primary_actuator.power_control_entity}:"
+                f"{None if primary_inputs is None else primary_inputs.current_limit_w},"
+                f" inverter={trim_entity}:"
+                f"{None if trim_inputs is None else trim_inputs.current_limit_w})",
                 level="WARNING",
             )
             return
@@ -510,9 +759,10 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             level="WARNING",
         )
 
-    def _expected_missing_power_control_reason(
+    def _expected_missing_reason(
         self,
-        actual_power_w: float | None,
+        primary_actual_power_w: float | None,
+        trim_actual_power_w: float | None,
         soc_pct: float | None,
         discharge_limit_pct: float | None,
         sun_state: str | None,
@@ -525,9 +775,14 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         ):
             return "battery_reserve"
 
+        known_actual_power_w = [
+            value
+            for value in (primary_actual_power_w, trim_actual_power_w)
+            if value is not None
+        ]
         if (
-            actual_power_w is None
-            or actual_power_w > self.availability.idle_output_threshold_w
+            not known_actual_power_w
+            or sum(known_actual_power_w) > self.availability.idle_output_threshold_w
         ):
             return None
 
@@ -579,6 +834,22 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         self.missing_required_unexpected_since_iso = None
         self.missing_required_warning_active = False
 
+    def _format_actuator_summary(self, actuator_result: ActuatorResult) -> str:
+        current_text = "None"
+        if actuator_result.current_limit_w is not None:
+            current_text = f"{int(actuator_result.current_limit_w)}W"
+        return (
+            f"{actuator_result.label}:"
+            f"{actuator_result.action}:"
+            f"{int(actuator_result.target_limit_w)}W"
+            f"(current={current_text})"
+        )
+
+    def _format_trim_summary(self, actuator_result: ActuatorResult | None) -> str:
+        if actuator_result is None:
+            return "None"
+        return self._format_actuator_summary(actuator_result)
+
     def _read_entity_float(self, entity_id: str | None) -> float | None:
         if not entity_id:
             return None
@@ -595,31 +866,151 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
     def _debug_entity(self, suffix: str) -> str:
         return f"{self.entities.debug_entity_prefix}_{suffix}"
 
+    def _most_recent_last_write_iso(self) -> str | None:
+        timestamps = [
+            timestamp
+            for timestamp in self.last_write_iso.values()
+            if timestamp is not None
+        ]
+        if not timestamps:
+            return None
+        return max(timestamps)
+
     def _publish_result(
-        self, result: ControllerResult, inputs: ControllerInputs
+        self,
+        result: ControllerResult,
+        inputs: ControllerInputs,
     ) -> None:
         state = "running"
         if self.config.dry_run:
             state = "dry_run"
-        if result.action == "skip" and result.reason.startswith("missing"):
-            state = "blocked"
+
+        trim_result = result.trim_actuator
+        trim_entity = self.entities.trim_actuator
+        total_actual_power_w = None
+        actual_values = [
+            value
+            for value in (
+                result.primary_actuator.actual_power_w,
+                None if trim_result is None else trim_result.actual_power_w,
+            )
+            if value is not None
+        ]
+        if actual_values:
+            total_actual_power_w = sum(actual_values)
 
         attributes = {
             "consumption_entity": self.entities.consumption_entity,
             "net_consumption_entity": self.entities.net_consumption_entity,
-            "power_control_entity": self.entities.power_control_entity,
-            "power_control_service": self.entities.power_control_service,
-            "power_control_value_key": self.entities.power_control_value_key,
-            "power_control_label": self.entities.power_control_label,
-            "actual_power_entity": self.entities.actual_power_entity,
+            "power_control_entity": (
+                self.entities.primary_actuator.power_control_entity
+            ),
+            "battery_power_control_entity": (
+                self.entities.primary_actuator.power_control_entity
+            ),
+            "power_control_service": (
+                self.entities.primary_actuator.power_control_service
+            ),
+            "battery_power_control_service": (
+                self.entities.primary_actuator.power_control_service
+            ),
+            "power_control_value_key": (
+                self.entities.primary_actuator.power_control_value_key
+            ),
+            "battery_power_control_value_key": (
+                self.entities.primary_actuator.power_control_value_key
+            ),
+            "power_control_label": self.entities.primary_actuator.power_control_label,
+            "battery_power_control_label": (
+                self.entities.primary_actuator.power_control_label
+            ),
+            "actual_power_entity": self.entities.primary_actuator.actual_power_entity,
+            "battery_actual_power_entity": (
+                self.entities.primary_actuator.actual_power_entity
+            ),
+            "trim_power_control_entity": None
+            if trim_entity is None
+            else trim_entity.power_control_entity,
+            "inverter_power_control_entity": None
+            if trim_entity is None
+            else trim_entity.power_control_entity,
+            "trim_power_control_service": None
+            if trim_entity is None
+            else trim_entity.power_control_service,
+            "inverter_power_control_service": None
+            if trim_entity is None
+            else trim_entity.power_control_service,
+            "trim_power_control_value_key": None
+            if trim_entity is None
+            else trim_entity.power_control_value_key,
+            "inverter_power_control_value_key": None
+            if trim_entity is None
+            else trim_entity.power_control_value_key,
+            "trim_power_control_label": None
+            if trim_entity is None
+            else trim_entity.power_control_label,
+            "inverter_power_control_label": None
+            if trim_entity is None
+            else trim_entity.power_control_label,
+            "trim_actual_power_entity": None
+            if trim_entity is None
+            else trim_entity.actual_power_entity,
+            "inverter_actual_power_entity": None
+            if trim_entity is None
+            else trim_entity.actual_power_entity,
             "battery_soc_entity": self.entities.battery_soc_entity,
             "battery_discharge_limit_entity": (
                 self.entities.battery_discharge_limit_entity
             ),
             "action": result.action,
             "reason": result.reason,
+            "available_actuators": self._available_actuator_labels(
+                inputs.primary_actuator,
+                inputs.trim_actuator,
+            ),
+            "primary_power_control_available": result.primary_actuator.available,
+            "battery_power_control_available": result.primary_actuator.available,
+            "trim_power_control_available": False
+            if trim_result is None
+            else trim_result.available,
+            "inverter_power_control_available": False
+            if trim_result is None
+            else trim_result.available,
             "current_power_control_w": round(result.current_limit_w, 1),
             "target_power_control_w": round(result.target_limit_w, 1),
+            "desired_target_w": round(result.desired_target_w, 1),
+            "primary_current_power_control_w": None
+            if result.primary_actuator.current_limit_w is None
+            else round(result.primary_actuator.current_limit_w, 1),
+            "battery_current_power_control_w": None
+            if result.primary_actuator.current_limit_w is None
+            else round(result.primary_actuator.current_limit_w, 1),
+            "primary_target_power_control_w": round(
+                result.primary_actuator.target_limit_w, 1
+            ),
+            "battery_target_power_control_w": round(
+                result.primary_actuator.target_limit_w, 1
+            ),
+            "primary_action": result.primary_actuator.action,
+            "battery_action": result.primary_actuator.action,
+            "primary_reason": result.primary_actuator.reason,
+            "battery_reason": result.primary_actuator.reason,
+            "trim_current_power_control_w": None
+            if trim_result is None or trim_result.current_limit_w is None
+            else round(trim_result.current_limit_w, 1),
+            "inverter_current_power_control_w": None
+            if trim_result is None or trim_result.current_limit_w is None
+            else round(trim_result.current_limit_w, 1),
+            "trim_target_power_control_w": None
+            if trim_result is None
+            else round(trim_result.target_limit_w, 1),
+            "inverter_target_power_control_w": None
+            if trim_result is None
+            else round(trim_result.target_limit_w, 1),
+            "trim_action": None if trim_result is None else trim_result.action,
+            "inverter_action": None if trim_result is None else trim_result.action,
+            "trim_reason": None if trim_result is None else trim_result.reason,
+            "inverter_reason": None if trim_result is None else trim_result.reason,
             "raw_consumption_w": round(inputs.consumption_w, 1),
             "effective_consumption_w": round(result.effective_consumption_w, 1),
             "smoothed_consumption_w": round(result.smoothed_consumption_w, 1),
@@ -631,8 +1022,20 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             else round(result.smoothed_net_consumption_w, 1),
             "net_correction_w": round(result.net_correction_w, 1),
             "actual_power_w": None
-            if inputs.actual_power_w is None
-            else round(inputs.actual_power_w, 1),
+            if total_actual_power_w is None
+            else round(total_actual_power_w, 1),
+            "primary_actual_power_w": None
+            if result.primary_actuator.actual_power_w is None
+            else round(result.primary_actuator.actual_power_w, 1),
+            "battery_actual_power_w": None
+            if result.primary_actuator.actual_power_w is None
+            else round(result.primary_actuator.actual_power_w, 1),
+            "trim_actual_power_w": None
+            if trim_result is None or trim_result.actual_power_w is None
+            else round(trim_result.actual_power_w, 1),
+            "inverter_actual_power_w": None
+            if trim_result is None or trim_result.actual_power_w is None
+            else round(trim_result.actual_power_w, 1),
             "battery_soc_pct": None
             if inputs.soc_pct is None
             else round(inputs.soc_pct, 1),
@@ -640,6 +1043,14 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             if inputs.discharge_limit_pct is None
             else round(inputs.discharge_limit_pct, 1),
             "allowed_max_output_w": round(result.allowed_max_output_w, 1),
+            "primary_allowed_max_output_w": round(
+                result.primary_allowed_max_output_w, 1
+            ),
+            "battery_allowed_max_output_w": round(
+                result.primary_allowed_max_output_w, 1
+            ),
+            "trim_allowed_max_output_w": round(result.trim_allowed_max_output_w, 1),
+            "inverter_allowed_max_output_w": round(result.trim_allowed_max_output_w, 1),
             "availability_warning_grace_s": round(self.availability.warning_grace_s, 1),
             "availability_idle_output_threshold_w": round(
                 self.availability.idle_output_threshold_w, 1
@@ -648,10 +1059,17 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
                 self.availability.low_sun_elevation_deg, 1
             ),
             "baseline_load_w": round(self.config.baseline_load_w, 1),
-            "seconds_since_last_write": None
-            if inputs.seconds_since_last_write is None
-            else round(inputs.seconds_since_last_write, 1),
-            "last_write_utc": self.last_write_iso,
+            "primary_seconds_since_last_write": None
+            if inputs.primary_actuator is None
+            or inputs.primary_actuator.seconds_since_last_write is None
+            else round(inputs.primary_actuator.seconds_since_last_write, 1),
+            "trim_seconds_since_last_write": None
+            if inputs.trim_actuator is None
+            or inputs.trim_actuator.seconds_since_last_write is None
+            else round(inputs.trim_actuator.seconds_since_last_write, 1),
+            "last_write_utc": self._most_recent_last_write_iso(),
+            "primary_last_write_utc": self.last_write_iso["primary"],
+            "trim_last_write_utc": self.last_write_iso["trim"],
             "export_fast": result.export_fast,
             "dry_run": self.config.dry_run,
         }
@@ -662,6 +1080,17 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             state=int(result.target_limit_w),
             attributes={"unit_of_measurement": "W"},
         )
+        self.set_state(
+            self._debug_entity("primary_target_limit"),
+            state=int(result.primary_actuator.target_limit_w),
+            attributes={"unit_of_measurement": "W"},
+        )
+        if trim_result is not None:
+            self.set_state(
+                self._debug_entity("trim_target_limit"),
+                state=int(trim_result.target_limit_w),
+                attributes={"unit_of_measurement": "W"},
+            )
         self.set_state(
             self._debug_entity("smoothed_consumption"),
             state=round(result.smoothed_consumption_w, 1),

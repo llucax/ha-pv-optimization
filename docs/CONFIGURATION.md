@@ -20,24 +20,29 @@ ha_pv_optimization:
 ## Required entity inputs
 
 - `consumption_entity` - required main load sensor in watts.
-- `power_control_entity` - required writable actuator entity that sets the target power limit.
+- `battery_power_control_entity` - required writable battery/base actuator entity that sets the coarse DC-side limit.
 
 If either required key is missing, startup fails.
 
 ## Recommended and optional entity inputs
 
 - `net_consumption_entity` - optional signed net import/export sensor in watts from a true grid-boundary meter; leave it unset for derived signals such as house consumption minus inverter output.
-- `actual_power_entity` - measured power output of the chosen actuator; optional, used for debug/status visibility.
+- `battery_actual_power_entity` - measured power output of the battery actuator; optional, used for debug/status visibility.
+- `inverter_power_control_entity` - optional inverter output-limit entity used as a second gate on the same house-serving power path.
+- `inverter_actual_power_entity` - measured power output of the inverter actuator; optional, used for debug/status visibility.
 - `battery_soc_entity` - battery state of charge sensor in percent; optional, used for reserve protection.
 - `battery_discharge_limit_entity` - battery reserve floor in percent; optional, used together with `battery_soc_entity`.
 
-If either battery protection input is missing, the controller skips the SOC-based protection layer.
+If either battery protection input is missing, the controller skips the SOC-based protection layer. When enabled, the SOC protection applies to the battery actuator. When the battery actuator is temporarily unavailable but the inverter actuator is still available, the controller can continue in inverter-only mode.
 
 ## Actuator write settings
 
-- `power_control_service` - optional Home Assistant service override used to write the actuator.
-- `power_control_value_key` - service field name for the numeric target; defaults to `value`.
-- `power_control_label` - friendly label for debug output; defaults to `power_control_entity`.
+- `battery_power_control_service` - optional Home Assistant service override used to write the battery actuator.
+- `battery_power_control_value_key` - service field name for the battery actuator numeric target; defaults to `value`.
+- `battery_power_control_label` - friendly label for battery-actuator debug output; defaults to `battery_power_control_entity`.
+- `inverter_power_control_service` - optional Home Assistant service override used to write the inverter actuator.
+- `inverter_power_control_value_key` - service field name for the inverter-actuator numeric target; defaults to `value`.
+- `inverter_power_control_label` - friendly label for inverter-actuator debug output; defaults to `inverter_power_control_entity`.
 
 If `power_control_service` is omitted, the wrapper auto-detects:
 
@@ -48,12 +53,16 @@ Other actuator domains must set `power_control_service` explicitly.
 
 ## Output range and quantization
 
-- `min_output_w` - minimum allowed target in watts; defaults to the actuator's numeric `min` attribute when available, otherwise `0`.
-- `max_output_w` - maximum allowed target in watts; defaults to the actuator's numeric `max` attribute when available, otherwise it must be set explicitly.
-- `power_step_w` - actuator step size in watts; defaults to the actuator's numeric `step` attribute when available, otherwise `50`.
-- `min_change_w` - minimum target delta before a write is sent; defaults to `power_step_w`.
+- `battery_min_output_w` - minimum allowed battery-actuator target in watts; defaults to the battery entity's numeric `min` attribute when available, otherwise `0`.
+- `battery_max_output_w` - maximum allowed battery-actuator target in watts; defaults to the battery entity's numeric `max` attribute when available, otherwise it must be set explicitly.
+- `battery_power_step_w` - battery-actuator step size in watts; defaults to the battery entity's numeric `step` attribute when available, otherwise `50`.
+- `battery_min_change_w` - minimum battery-actuator target delta before a write is sent; defaults to `battery_power_step_w`.
+- `inverter_min_output_w` - minimum allowed inverter-actuator target in watts; defaults to the inverter entity's numeric `min` attribute when available.
+- `inverter_max_output_w` - maximum allowed inverter-actuator target in watts; defaults to the inverter entity's numeric `max` attribute when available.
+- `inverter_power_step_w` - inverter-actuator step size in watts; defaults to the inverter entity's numeric `step` attribute when available, otherwise `50`.
+- `inverter_min_change_w` - minimum inverter-actuator target delta before a write is sent; defaults to `inverter_power_step_w`.
 
-Startup fails if `max_output_w` cannot be determined, or if `max_output_w < min_output_w`.
+Startup fails if a configured actuator cannot determine `max_output_w`, or if an actuator's max is lower than its min.
 
 ## Control behavior
 
@@ -69,10 +78,14 @@ Startup fails if `max_output_w` cannot be determined, or if `max_output_w < min_
 
 ## Write-rate protection
 
-- `min_write_interval_s` - minimum time between writes; default `60`.
-- `max_increase_per_cycle_w` - normal maximum increase per control cycle; default `150`.
-- `max_decrease_per_cycle_w` - normal maximum decrease per control cycle; default `300`.
-- `emergency_max_decrease_per_cycle_w` - faster decrease limit used during strong export; default `500`.
+- `battery_min_write_interval_s` - minimum time between battery-actuator writes; default `60`.
+- `battery_max_increase_per_cycle_w` - normal maximum battery-actuator increase per control cycle; default `150`.
+- `battery_max_decrease_per_cycle_w` - normal maximum battery-actuator decrease per control cycle; default `300`.
+- `battery_emergency_max_decrease_per_cycle_w` - faster battery-actuator decrease limit used during strong export; default `500`.
+- `inverter_min_write_interval_s` - minimum time between inverter-actuator writes; default `60`.
+- `inverter_max_increase_per_cycle_w` - normal maximum inverter-actuator increase per control cycle; default `150`.
+- `inverter_max_decrease_per_cycle_w` - normal maximum inverter-actuator decrease per control cycle; default `300`.
+- `inverter_emergency_max_decrease_per_cycle_w` - faster inverter-actuator decrease limit used during strong export; default `500`.
 
 ## Battery protection
 
@@ -82,8 +95,8 @@ Startup fails if `max_output_w` cannot be determined, or if `max_output_w < min_
 
 When both battery inputs are present, the controller:
 
-- forces output to `0 W` near the reserve floor
-- linearly derates output above that stop band
+- forces the battery actuator to `0 W` near the reserve floor
+- linearly derates the battery actuator above that stop band
 
 ## Sign convention and debug output
 
@@ -107,8 +120,10 @@ The generic example currently includes these keys:
 - `class`
 - `consumption_entity`
 - `net_consumption_entity`
-- `power_control_entity`
-- `actual_power_entity`
+- `battery_power_control_entity`
+- `battery_actual_power_entity`
+- `inverter_power_control_entity`
+- `inverter_actual_power_entity`
 - `battery_soc_entity`
 - `battery_discharge_limit_entity`
 - `baseline_load_w`
@@ -134,12 +149,23 @@ The generic example currently includes these keys:
 
 The same example also documents these optional keys in comments because they are only needed for some actuators:
 
-- `power_control_service`
-- `power_control_value_key`
-- `min_output_w`
-- `max_output_w`
-- `power_step_w`
-- `power_control_label`
+- `battery_power_control_service`
+- `battery_power_control_value_key`
+- `battery_min_output_w`
+- `battery_max_output_w`
+- `battery_power_step_w`
+- `battery_power_control_label`
+- `inverter_power_control_service`
+- `inverter_power_control_value_key`
+- `inverter_min_output_w`
+- `inverter_max_output_w`
+- `inverter_power_step_w`
+- `inverter_power_control_label`
+- `inverter_min_change_w`
+- `inverter_min_write_interval_s`
+- `inverter_max_increase_per_cycle_w`
+- `inverter_max_decrease_per_cycle_w`
+- `inverter_emergency_max_decrease_per_cycle_w`
 - `availability_warning_grace_s`
 - `availability_idle_output_threshold_w`
 - `availability_low_sun_elevation_deg`
