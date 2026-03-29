@@ -266,3 +266,57 @@ def test_live_mode_writes_primary_and_trim_targets() -> None:
     assert status_update[2]["target_power_control_w"] == 350.0
     assert status_update[2]["primary_target_power_control_w"] == 350.0
     assert status_update[2]["trim_target_power_control_w"] == 350.0
+
+
+def test_debug_target_entities_publish_zero_as_string() -> None:
+    app = FakeHaPvOptimization(
+        args={
+            "consumption_entity": "sensor.load",
+            "battery_power_control_entity": "number.battery_limit",
+            "battery_power_step_w": 50,
+            "battery_min_change_w": 50,
+            "battery_min_write_interval_s": 0,
+            "battery_max_increase_per_cycle_w": 500,
+            "battery_max_decrease_per_cycle_w": 500,
+            "battery_emergency_max_decrease_per_cycle_w": 500,
+            "inverter_power_control_entity": "number.inverter_limit",
+            "inverter_min_output_w": 30,
+            "inverter_power_step_w": 10,
+            "inverter_min_change_w": 10,
+            "inverter_min_write_interval_s": 0,
+            "inverter_max_increase_per_cycle_w": 500,
+            "inverter_max_decrease_per_cycle_w": 500,
+            "inverter_emergency_max_decrease_per_cycle_w": 500,
+            "battery_soc_entity": "sensor.battery_soc",
+            "battery_discharge_limit_entity": "number.battery_reserve",
+            "battery_max_output_w": 800,
+            "inverter_max_output_w": 800,
+            "dry_run": True,
+        },
+        state_map={
+            "sensor.load": "128",
+            "number.battery_limit": {
+                "state": "800",
+                "attributes": {"min": 0, "max": 800, "step": 50},
+            },
+            "number.inverter_limit": "unavailable",
+            "sensor.battery_soc": "22",
+            "number.battery_reserve": "20",
+        },
+    )
+
+    app.initialize()
+    app._control_tick({})
+
+    primary_target = next(
+        update
+        for update in app.state_updates
+        if update[0].endswith("_primary_target_limit")
+    )
+    trim_target = next(
+        update
+        for update in app.state_updates
+        if update[0].endswith("_trim_target_limit")
+    )
+    assert primary_target[1] == "0"
+    assert trim_target[1] == "0"

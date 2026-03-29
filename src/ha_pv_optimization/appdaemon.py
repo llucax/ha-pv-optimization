@@ -86,6 +86,14 @@ def _format_duration(duration_s: float) -> str:
     return f"{seconds}s"
 
 
+def _sensor_state(value: float | int) -> str:
+    if isinstance(value, int):
+        return str(value)
+    if float(value).is_integer():
+        return str(int(value))
+    return str(value)
+
+
 _DEFAULT_AVAILABILITY_WARNING_GRACE_S = 15 * 60.0
 _DEFAULT_AVAILABILITY_IDLE_OUTPUT_THRESHOLD_W = 20.0
 _DEFAULT_AVAILABILITY_LOW_SUN_ELEVATION_DEG = 10.0
@@ -1077,29 +1085,29 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         self.set_state(self._debug_entity("status"), state=state, attributes=attributes)
         self.set_state(
             self._debug_entity("target_limit"),
-            state=int(result.target_limit_w),
+            state=_sensor_state(int(result.target_limit_w)),
             attributes={"unit_of_measurement": "W"},
         )
         self.set_state(
             self._debug_entity("primary_target_limit"),
-            state=int(result.primary_actuator.target_limit_w),
+            state=_sensor_state(int(result.primary_actuator.target_limit_w)),
             attributes={"unit_of_measurement": "W"},
         )
         if trim_result is not None:
             self.set_state(
                 self._debug_entity("trim_target_limit"),
-                state=int(trim_result.target_limit_w),
+                state=_sensor_state(int(trim_result.target_limit_w)),
                 attributes={"unit_of_measurement": "W"},
             )
         self.set_state(
             self._debug_entity("smoothed_consumption"),
-            state=round(result.smoothed_consumption_w, 1),
+            state=_sensor_state(round(result.smoothed_consumption_w, 1)),
             attributes={"unit_of_measurement": "W"},
         )
         if result.smoothed_net_consumption_w is not None:
             self.set_state(
                 self._debug_entity("smoothed_net"),
-                state=round(result.smoothed_net_consumption_w, 1),
+                state=_sensor_state(round(result.smoothed_net_consumption_w, 1)),
                 attributes={"unit_of_measurement": "W"},
             )
 
