@@ -5,7 +5,7 @@ ha_pv_optimization:
   class: HaPvOptimization
 
   # Main house/load power sensor in watts.
-  consumption_entity: sensor.house_consumption_power
+  consumption_entity: sensor.total_consumption_power
   # Optional signed grid import/export sensor in watts.
   # Enable this only for a true grid-boundary meter, not for a derived
   # sensor such as house consumption minus inverter output.
@@ -13,24 +13,24 @@ ha_pv_optimization:
 
   # The primary actuator carries the coarse/base target.
   # A writable `number.*` entity can usually infer the service automatically.
-  # Battery-style primary control:
+  # Growatt NOAH 2000 battery control:
   # Writable power-limit entity for the primary actuator.
-  battery_power_control_entity: number.battery_output_power_limit
+  battery_power_control_entity: number.noah_system_output_power
   # Measured real output power for the primary actuator.
-  battery_actual_power_entity: sensor.battery_output_power
+  battery_actual_power_entity: sensor.noah_output_power
   # Friendly label used in debug output for the primary actuator.
   battery_power_control_label: battery
 
-  # Optional trim actuator for a faster secondary limit, for example an inverter.
-  # inverter_power_control_entity: number.inverter_output_power_limit
-  # inverter_actual_power_entity: sensor.inverter_output_power
+  # Optional APsystems EZ1-M inverter control on the same output path.
+  # inverter_power_control_entity: number.ez1_output_power_limit
+  # inverter_actual_power_entity: sensor.ez1_output_power
   # inverter_power_control_label: inverter
 
   # Optional battery safety inputs.
   # Battery state of charge in percent.
-  battery_soc_entity: sensor.battery_soc
+  battery_soc_entity: sensor.noah_soc
   # Battery reserve/discharge floor in percent.
-  battery_discharge_limit_entity: number.battery_discharge_limit
+  battery_discharge_limit_entity: number.noah_discharge_limit
 
   # For non-number domains, set the service explicitly.
   # Home Assistant service used to write the primary actuator.

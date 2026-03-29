@@ -1,6 +1,6 @@
 # Assumptions and Current Limitations
 
-`ha-pv-optimization` is deliberately generic within a narrow control model.
+`ha-pv-optimization` is deliberately opinionated around a NOAH 2000 plus EZ1-M style control model.
 
 It is not a universal EMS.
 

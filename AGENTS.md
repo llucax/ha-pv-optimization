@@ -1,11 +1,11 @@
 # AGENTS.md
 
-This repository contains a reusable Home Assistant / AppDaemon controller for coarse PV and battery power-setpoint optimization.
+This repository contains an opinionated Home Assistant / AppDaemon controller for a Growatt NOAH 2000 battery feeding an APsystems EZ1-M inverter.
 
 This file is for coding agents working in this repo.
 
 ## Repository boundary
-- Keep examples generic.
+- Keep the project adaptable, but let defaults and docs assume the NOAH 2000 plus EZ1-M style setup.
 - Do not add installation-specific data, hostnames, serial numbers, real IPs, real domains, secrets, or local Home Assistant paths.
 - Do not copy support snapshots or operational telemetry into the repo.
 
@@ -15,12 +15,12 @@ This file is for coding agents working in this repo.
 - `src/ha_pv_optimization/appdaemon.py` - AppDaemon wrapper; keep it thin.
 - `tests/` - unit tests for the core logic.
 - `docs/` - assumptions, configuration, and install guidance.
-- `examples/` - generic deployment and AppDaemon examples.
+- `examples/` - opinionated AppDaemon and systemd examples for the NOAH 2000 plus EZ1-M style deployment.
 
 ## Architecture expectations
 - Keep control logic pure and deterministic in `src/ha_pv_optimization/core.py`.
 - Keep Home Assistant / AppDaemon integration as translation and I/O glue only.
-- Prefer configuration flags over vendor-specific branching.
+- Prefer device-specific defaults and config names that match the battery-plus-inverter gate model used by this project.
 - Preserve safety behavior: clamping, deadbands, slew limits, minimum write intervals, and `dry_run`.
 - Document changed assumptions whenever behavior, topology fit, or config semantics change.
 
@@ -117,6 +117,7 @@ uv run pytest
 - Maintain quantization, clamp behavior, and slew limiting unless the change explicitly redesigns control behavior.
 - Preserve `dry_run` semantics for safe rollout.
 - If you add a new control input or config key, thread it through config docs, assumptions, examples, and tests.
+- Treat the topology as `PV -DC-> battery -DC-> inverter -AC-> house`, with battery and inverter acting as two gates on the same output path rather than additive outputs.
 
 ## Testing guidance
 - Prefer deterministic unit tests with explicit numeric expectations.
@@ -126,11 +127,11 @@ uv run pytest
 - Use one test per behavior branch when possible.
 
 ## Documentation expectations
-- Keep `README.md` focused on the generic project, not one installation.
+- Keep `README.md` focused on the NOAH 2000 plus EZ1-M AppDaemon project, not one private installation.
 - Update `docs/ASSUMPTIONS.md` when topology, safety, or actuator assumptions change.
 - Update `docs/CONFIGURATION.md` when config keys or defaults change.
 - Update `docs/INSTALL.md` when deployment guidance changes.
-- Update examples only with generic entity names and generic deployment details.
+- Update examples with vendor-flavored placeholder entity names when helpful, but never with private installation ids or secrets.
 
 ## Agent workflow guidance
 - Read nearby code before editing; follow the established style in the touched file.
@@ -147,7 +148,7 @@ uv run pytest
 
 ## Avoid
 - Installation-specific entity IDs in committed code or docs.
-- Vendor-specific shortcuts without documenting the limitation.
+- Pretending the project is fully generic when defaults clearly target the NOAH 2000 plus EZ1-M style setup.
 - Hidden behavior changes in default values.
 - Large refactors that mix formatting, renaming, and logic changes.
 - Moving business logic from the pure core into Home Assistant glue code.

@@ -1,6 +1,8 @@
 # Install
 
-This project is a normal Python package for development, but AppDaemon still expects a module inside its apps directory.
+This project is an AppDaemon-focused Python package for the NOAH 2000 plus EZ1-M style setup.
+
+It is still installable as a normal Python project for development, but the intended runtime is Home Assistant plus AppDaemon.
 
 The common deployment pattern is:
 
@@ -29,6 +31,7 @@ Example target layout:
 ```text
 /srv/ha-pv-optimization/
   appdaemon.yaml
+  secrets.yaml
   systemd.env
   apps/
     apps.yaml
@@ -42,6 +45,7 @@ The bridge module keeps AppDaemon's app loading simple while the real code stays
 Use these files as starting points:
 
 - `examples/appdaemon.yaml.example`
+- `examples/secrets.yaml.example`
 - `examples/apps.yaml.example`
 - `examples/systemd/ha-pv-optimization.service`
 - `examples/systemd/ha-pv-optimization.env.example`
@@ -50,15 +54,20 @@ Use these files as starting points:
 
 ### `examples/appdaemon.yaml.example`
 
+- `secrets` - explicit AppDaemon secrets file path.
 - `appdaemon.time_zone` - AppDaemon-wide timezone used for scheduling and timestamps.
 - `appdaemon.latitude` - required site latitude in decimal degrees.
 - `appdaemon.longitude` - required site longitude in decimal degrees.
 - `appdaemon.elevation` - required site elevation in meters.
 - `appdaemon.plugins.HASS.type` - AppDaemon plugin type; keep `hass` for Home Assistant.
 - `appdaemon.plugins.HASS.ha_url` - Home Assistant base URL that AppDaemon connects to.
-- `appdaemon.plugins.HASS.token` - Home Assistant long-lived access token.
+- `appdaemon.plugins.HASS.token` - Home Assistant long-lived access token loaded via `!secret`.
 - `appdaemon.plugins.HASS.cert_verify` - whether TLS certificates are verified for the Home Assistant endpoint.
 - `http`, `admin`, `api` - optional AppDaemon web/UI sections; omit them unless you want AppDaemon's own web UI or API.
+
+### `examples/secrets.yaml.example`
+
+- `ha_token` - Home Assistant long-lived access token used by `examples/appdaemon.yaml.example`.
 
 ### `examples/apps.yaml.example`
 
@@ -73,6 +82,8 @@ The example includes:
 - optional actuator overrides: `battery_power_control_service`, `battery_power_control_value_key`, `battery_power_control_label`, `inverter_power_control_service`, `inverter_power_control_value_key`, `inverter_power_control_label`
 - optional output range overrides: `battery_min_output_w`, `battery_max_output_w`, `battery_power_step_w`, `inverter_min_output_w`, `inverter_max_output_w`, `inverter_power_step_w`
 - control tuning and safety settings such as `control_interval_s`, `deadband_w`, `min_write_interval_s`, `dry_run`, and availability-warning tuning keys
+
+The defaults assume a NOAH 2000 battery gate and an optional EZ1-M inverter gate on the same house-serving power path.
 
 ### `examples/ha_pv_optimization_app.py`
 
@@ -117,6 +128,7 @@ Suggested host layout:
 ```text
 /srv/ha-pv-optimization/
   appdaemon.yaml
+  secrets.yaml
   systemd.env
   apps/
     apps.yaml

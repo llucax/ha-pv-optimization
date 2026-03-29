@@ -1,3 +1,5 @@
+secrets: /conf/secrets.yaml
+
 appdaemon:
   # AppDaemon-wide timezone for schedules and timestamps.
   time_zone: UTC
@@ -13,8 +15,8 @@ appdaemon:
       type: hass
       # Home Assistant base URL reachable from the AppDaemon host/container.
       ha_url: https://home-assistant.local:8123
-      # Long-lived access token created from the Home Assistant UI.
-      token: YOUR_LONG_LIVED_ACCESS_TOKEN
+      # Long-lived access token loaded from /conf/secrets.yaml.
+      token: !secret ha_token
       # Verify the Home Assistant TLS certificate in the generic example.
       cert_verify: true
 

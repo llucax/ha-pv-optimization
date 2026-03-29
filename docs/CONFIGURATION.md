@@ -2,6 +2,8 @@
 
 This document describes every AppDaemon app argument used by `examples/apps.yaml.example`.
 
+The defaults documented here are intentionally tuned around a Growatt NOAH 2000 battery plus APsystems EZ1-M inverter style deployment, even though the entity names in the example remain adaptable.
+
 The example block is one AppDaemon app instance:
 
 ```yaml
@@ -135,11 +137,11 @@ The generic example currently includes these keys:
 - `fast_export_threshold_w`
 - `import_correction_gain`
 - `export_correction_gain`
-- `min_change_w`
-- `min_write_interval_s`
-- `max_increase_per_cycle_w`
-- `max_decrease_per_cycle_w`
-- `emergency_max_decrease_per_cycle_w`
+- `battery_min_change_w`
+- `battery_min_write_interval_s`
+- `battery_max_increase_per_cycle_w`
+- `battery_max_decrease_per_cycle_w`
+- `battery_emergency_max_decrease_per_cycle_w`
 - `soc_stop_buffer_pct`
 - `soc_full_power_buffer_pct`
 - `soc_min_derate_factor`
