@@ -10,12 +10,12 @@ class FakeHaPvOptimization(HaPvOptimization):
     def __init__(self, args: dict[str, Any], state_map: dict[str, Any]) -> None:
         self.args = args
         self.state_map = state_map
-        self.logs: list[tuple[str, str]] = []
+        self.logs: list[tuple[str, str, dict[str, Any]]] = []
         self.state_updates: list[tuple[str, Any, dict[str, Any]]] = []
         self.service_calls: list[tuple[str, dict[str, Any]]] = []
 
-    def log(self, message: str, level: str = "INFO") -> None:
-        self.logs.append((level, message))
+    def log(self, message: str, level: str = "INFO", **kwargs: Any) -> None:
+        self.logs.append((level, message, kwargs))
 
     def run_every(self, callback: Any, start: Any, interval: Any) -> None:
         return None
@@ -40,11 +40,19 @@ class FakeHaPvOptimization(HaPvOptimization):
 
 
 def _warning_messages(app: FakeHaPvOptimization) -> list[str]:
-    return [message for level, message in app.logs if level == "WARNING"]
+    return [message for level, message, _ in app.logs if level == "WARNING"]
 
 
 def _info_messages(app: FakeHaPvOptimization) -> list[str]:
-    return [message for level, message in app.logs if level == "INFO"]
+    return [message for level, message, _ in app.logs if level == "INFO"]
+
+
+def _messages_for_log(
+    app: FakeHaPvOptimization,
+    *,
+    log_name: str,
+) -> list[str]:
+    return [message for _, message, kwargs in app.logs if kwargs.get("log") == log_name]
 
 
 def _heartbeat_messages(app: FakeHaPvOptimization) -> list[str]:
@@ -430,3 +438,36 @@ def test_skip_cycles_emit_startup_and_periodic_heartbeat(monkeypatch: Any) -> No
     now["value"] = appdaemon_module._CONTROL_HEARTBEAT_INTERVAL_S + 1.0
     app._control_tick({})
     assert len(_heartbeat_messages(app)) == 2
+
+
+def test_control_cycle_can_use_dedicated_user_log() -> None:
+    app = FakeHaPvOptimization(
+        args={
+            "consumption_entity": "sensor.load",
+            "battery_power_control_entity": "number.battery_limit",
+            "battery_power_step_w": 50,
+            "battery_min_change_w": 50,
+            "battery_min_write_interval_s": 0,
+            "battery_max_increase_per_cycle_w": 500,
+            "battery_max_decrease_per_cycle_w": 500,
+            "battery_emergency_max_decrease_per_cycle_w": 500,
+            "battery_max_output_w": 800,
+            "dry_run": True,
+            "control_cycle_log": "cycle_log",
+            "control_cycle_log_level": "INFO",
+        },
+        state_map={
+            "sensor.load": "200",
+            "number.battery_limit": {
+                "state": "100",
+                "attributes": {"min": 0, "max": 800, "step": 50},
+            },
+        },
+    )
+
+    app.initialize()
+    app._control_tick({})
+
+    cycle_messages = _messages_for_log(app, log_name="cycle_log")
+    assert len(cycle_messages) == 1
+    assert "Control cycle" in cycle_messages[0]

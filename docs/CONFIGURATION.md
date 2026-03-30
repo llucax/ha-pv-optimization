@@ -80,6 +80,13 @@ Startup fails if a configured actuator cannot determine `max_output_w`, or if an
 - `import_correction_gain` - gain applied when correcting import when `net_consumption_entity` is configured; default `0.35`.
 - `export_correction_gain` - gain applied when correcting export when `net_consumption_entity` is configured; default `1.0`.
 
+## Logging
+
+- `control_cycle_log` - optional AppDaemon user-log name for per-cycle `Control cycle ...` diagnostics.
+- `control_cycle_log_level` - level used for those cycle diagnostics; default `DEBUG`.
+
+If `control_cycle_log` is not set, the per-cycle diagnostics stay on the main AppDaemon log at the configured `control_cycle_log_level`. If it is set, those lines are routed to the named AppDaemon user log instead. When that user log is defined without a `filename`, AppDaemon writes it to stdout so it still appears in `journalctl` without creating a separate file.
+
 ## Write-rate protection
 
 - `battery_min_write_interval_s` - minimum time between battery-actuator writes; default `60`.

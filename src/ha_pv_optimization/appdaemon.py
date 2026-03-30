@@ -25,7 +25,7 @@ except ImportError:  # pragma: no cover
     class BaseHass:  # type: ignore[no-redef]
         args: dict[str, Any]
 
-        def log(self, message: str, level: str = "INFO") -> None:
+        def log(self, message: str, level: str = "INFO", **kwargs: Any) -> None:
             return None
 
         def run_every(self, callback: Any, start: Any, interval: Any) -> None:
@@ -94,6 +94,16 @@ def _sensor_state(value: float | int) -> str:
     return str(value)
 
 
+def _normalized_log_level(value: Any, default: str = "DEBUG") -> str:
+    text = _as_non_empty_str(value)
+    if text is None:
+        return default
+    normalized = text.upper()
+    if normalized in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
+        return normalized
+    return default
+
+
 _DEFAULT_AVAILABILITY_WARNING_GRACE_S = 15 * 60.0
 _DEFAULT_AVAILABILITY_IDLE_OUTPUT_THRESHOLD_W = 20.0
 _DEFAULT_AVAILABILITY_LOW_SUN_ELEVATION_DEG = 10.0
@@ -135,11 +145,18 @@ class AvailabilityConfig:
     low_sun_elevation_deg: float
 
 
+@dataclass(frozen=True)
+class LoggingConfig:
+    control_cycle_log: str | None
+    control_cycle_log_level: str
+
+
 class HaPvOptimization(BaseHass):  # type: ignore[misc]
     def initialize(self) -> None:
         self.entities = self._build_entity_config()
         self.config = self._build_controller_config()
         self.availability = self._build_availability_config()
+        self.logging = self._build_logging_config()
         self.controller = PowerControllerCore(self.config)
         self.last_write_monotonic: dict[str, float | None] = {
             "battery": None,
@@ -427,6 +444,27 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             low_sun_elevation_deg=low_sun_elevation_deg,
         )
 
+    def _build_logging_config(self) -> LoggingConfig:
+        return LoggingConfig(
+            control_cycle_log=_as_non_empty_str(self.args.get("control_cycle_log")),
+            control_cycle_log_level=_normalized_log_level(
+                self.args.get("control_cycle_log_level"),
+                default="DEBUG",
+            ),
+        )
+
+    def _emit_log(
+        self,
+        message: str,
+        *,
+        level: str = "INFO",
+        log_name: str | None = None,
+    ) -> None:
+        if log_name is None:
+            self.log(message, level=level)
+            return
+        self.log(message, level=level, log=log_name)
+
     def _require_entity(self, key: str) -> str:
         value = _as_non_empty_str(self.args.get(key))
         if value is None:
@@ -509,7 +547,7 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         else:
             self._maybe_log_control_heartbeat(result)
 
-        self.log(
+        self._emit_log(
             "Control cycle"
             f" action={result.action}"
             f" requested={result.requested_target_w:.1f}W"
@@ -519,7 +557,8 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             f" smoothed={result.smoothed_consumption_w:.1f}W"
             f" net={result.raw_net_consumption_w}"
             f" reason={result.reason}",
-            level="DEBUG",
+            level=self.logging.control_cycle_log_level,
+            log_name=self.logging.control_cycle_log,
         )
 
         self._publish_result(result, inputs)
