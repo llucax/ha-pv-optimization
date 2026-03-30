@@ -11,14 +11,17 @@ This file is for coding agents working in this repo.
 
 ## Project layout
 - `src/ha_pv_optimization/` - installable package code.
-- `src/ha_pv_optimization/core.py` - pure decision logic; keep most behavior changes here.
+- `src/ha_pv_optimization/models.py` - typed controller config, inputs, and results.
+- `src/ha_pv_optimization/signals.py` - pure signal math and reusable helpers.
+- `src/ha_pv_optimization/controller.py` - pure controller orchestration and decision logic.
+- `src/ha_pv_optimization/core.py` - compatibility re-export layer for the controller API.
 - `src/ha_pv_optimization/appdaemon.py` - AppDaemon wrapper; keep it thin.
 - `tests/` - unit tests for the core logic.
 - `docs/` - assumptions, configuration, and install guidance.
 - `examples/` - opinionated AppDaemon and systemd examples for the NOAH 2000 plus EZ1-M style deployment.
 
 ## Architecture expectations
-- Keep control logic pure and deterministic in `src/ha_pv_optimization/core.py`.
+- Keep control logic pure and deterministic in `src/ha_pv_optimization/controller.py`, `src/ha_pv_optimization/models.py`, and `src/ha_pv_optimization/signals.py`.
 - Keep Home Assistant / AppDaemon integration as translation and I/O glue only.
 - Prefer device-specific defaults and config names that match the battery-plus-inverter gate model used by this project.
 - Preserve safety behavior: clamping, deadbands, slew limits, minimum write intervals, and `dry_run`.
@@ -62,7 +65,7 @@ uv run pytest
 - Run one file with verbose output: `uv run pytest -vv tests/test_core.py`
 
 ## When to run what
-- For changes in `src/ha_pv_optimization/core.py`, run at least the focused core test file plus lint.
+- For changes in `src/ha_pv_optimization/controller.py`, `src/ha_pv_optimization/models.py`, or `src/ha_pv_optimization/signals.py`, run at least the focused core test file plus lint.
 - For behavior changes, add or update tests in `tests/test_core.py`.
 - For wrapper/config/docs changes, run lint and the full test suite unless the change is purely documentation.
 - For packaging or import-path changes, run `uv build` in addition to lint/tests.
@@ -79,8 +82,8 @@ uv run pytest
 - Group imports as: standard library, third-party, then local package imports.
 - Separate import groups with a single blank line.
 - Prefer explicit imports over wildcard imports.
-- In package modules, follow the existing relative-import style such as `from .core import ...`.
-- In tests, import the package API explicitly; keep any path bootstrapping minimal and localized.
+- In package modules, follow the existing relative-import style such as `from .models import ...`.
+- In tests, import the package API directly and prefer pytest configuration over manual path bootstrapping.
 
 ## Types and data modeling
 - Add type hints to public functions, methods, and important locals when helpful.
@@ -145,6 +148,7 @@ uv run pytest
 - Add a config field in `ControllerConfig`, plumb it from the AppDaemon args parser, document it, and test it.
 - Add pure helper functions for reusable math or parsing logic.
 - Keep debug/status publishing aligned with new result fields when exposing new controller outputs.
+- When a stage changes internal architecture, update `README.md`, `docs/`, and this file so the current module split and validation steps stay accurate.
 
 ## Avoid
 - Installation-specific entity IDs in committed code or docs.

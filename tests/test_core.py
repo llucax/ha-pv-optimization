@@ -1,25 +1,20 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from typing import Any
 
-SRC_DIR = Path(__file__).resolve().parents[1] / "src"
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
-
-from ha_pv_optimization.core import (  # noqa: E402
+from ha_pv_optimization.controller import PowerControllerCore
+from ha_pv_optimization.core import ControllerConfig as LegacyControllerConfig
+from ha_pv_optimization.models import (
     ActuatorConfig,
     ActuatorInputs,
     ControllerConfig,
     ControllerInputs,
-    PowerControllerCore,
 )
 
 
 def _single_actuator_controller(**kwargs: Any) -> PowerControllerCore:
     primary_config = ActuatorConfig(
-        label="primary",
+        label="battery",
         max_output_w=float(kwargs.pop("max_output_w", 1000.0)),
         min_write_interval_s=float(kwargs.pop("min_write_interval_s", 60.0)),
         max_increase_per_cycle_w=float(kwargs.pop("max_increase_per_cycle_w", 150.0)),
@@ -37,6 +32,28 @@ def _single_actuator_controller(**kwargs: Any) -> PowerControllerCore:
             **kwargs,
         )
     )
+
+
+def test_legacy_core_exports_match_models_module() -> None:
+    assert LegacyControllerConfig is ControllerConfig
+
+
+def test_battery_and_inverter_alias_properties_match_legacy_fields() -> None:
+    inverter_config = ActuatorConfig(label="inverter", max_output_w=800.0)
+    controller_config = ControllerConfig(
+        primary_actuator=ActuatorConfig(label="battery", max_output_w=800.0),
+        trim_actuator=inverter_config,
+    )
+    controller_inputs = ControllerInputs(
+        consumption_w=120.0,
+        primary_actuator=ActuatorInputs(current_limit_w=100.0),
+        trim_actuator=ActuatorInputs(current_limit_w=80.0),
+    )
+
+    assert controller_config.battery_actuator is controller_config.primary_actuator
+    assert controller_config.inverter_actuator is inverter_config
+    assert controller_inputs.battery_actuator is controller_inputs.primary_actuator
+    assert controller_inputs.inverter_actuator is controller_inputs.trim_actuator
 
 
 def test_baseline_load_is_added_to_consumption() -> None:

@@ -6,14 +6,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from .core import (
+from .controller import PowerControllerCore
+from .models import (
     ActuatorConfig,
     ActuatorInputs,
     ActuatorResult,
     ControllerConfig,
     ControllerInputs,
     ControllerResult,
-    PowerControllerCore,
 )
 
 try:
@@ -141,12 +141,12 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         self.availability = self._build_availability_config()
         self.controller = PowerControllerCore(self.config)
         self.last_write_monotonic: dict[str, float | None] = {
-            "primary": None,
-            "trim": None,
+            "battery": None,
+            "inverter": None,
         }
         self.last_write_iso: dict[str, str | None] = {
-            "primary": None,
-            "trim": None,
+            "battery": None,
+            "inverter": None,
         }
         self.missing_required_entities: tuple[str, ...] | None = None
         self.missing_required_since_monotonic: float | None = None
@@ -156,15 +156,15 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         self.missing_required_unexpected_since_iso: str | None = None
         self.missing_required_warning_active = False
 
-        trim_label = None
+        inverter_label = None
         if self.entities.trim_actuator is not None:
-            trim_label = self.entities.trim_actuator.power_control_label
+            inverter_label = self.entities.trim_actuator.power_control_label
 
         self.log(
             "Initialized ha-pv-optimization controller"
             f" (consumption={self.entities.consumption_entity},"
             f" battery={self.entities.primary_actuator.power_control_label},"
-            f" inverter={trim_label},"
+            f" inverter={inverter_label},"
             f" dry_run={self.config.dry_run})"
         )
 
@@ -172,13 +172,13 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         self.run_every(self._control_tick, start, self.config.control_interval_s)
 
     def _build_entity_config(self) -> EntityConfig:
-        primary_actuator = self._build_actuator_entity_config(
+        battery_actuator = self._build_actuator_entity_config(
             prefix="",
             alias_prefix="battery_",
-            slot="primary",
+            slot="battery",
             required=True,
         )
-        assert primary_actuator is not None
+        assert battery_actuator is not None
 
         return EntityConfig(
             consumption_entity=self._require_entity("consumption_entity"),
@@ -189,11 +189,11 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             battery_discharge_limit_entity=_as_non_empty_str(
                 self.args.get("battery_discharge_limit_entity")
             ),
-            primary_actuator=primary_actuator,
+            primary_actuator=battery_actuator,
             trim_actuator=self._build_actuator_entity_config(
                 prefix="trim_",
                 alias_prefix="inverter_",
-                slot="trim",
+                slot="inverter",
                 required=False,
             ),
             debug_entity_prefix=_as_non_empty_str(self.args.get("debug_entity_prefix"))
@@ -257,9 +257,9 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         )
 
     def _build_controller_config(self) -> ControllerConfig:
-        trim_actuator = None
+        inverter_actuator = None
         if self.entities.trim_actuator is not None:
-            trim_actuator = self._build_actuator_config(
+            inverter_actuator = self._build_actuator_config(
                 entity_config=self.entities.trim_actuator,
                 prefix="trim_",
                 alias_prefix="inverter_",
@@ -271,7 +271,7 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
                 prefix="",
                 alias_prefix="battery_",
             ),
-            trim_actuator=trim_actuator,
+            trim_actuator=inverter_actuator,
             control_interval_s=self._get_float("control_interval_s", 30.0),
             consumption_ema_tau_s=self._get_float("consumption_ema_tau_s", 75.0),
             net_ema_tau_s=self._get_float("net_ema_tau_s", 45.0),
@@ -443,7 +443,7 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         primary_inputs = self._read_actuator_inputs(
             entity_config=self.entities.primary_actuator,
             actual_power_w=primary_actual_power_w,
-            last_write_monotonic=self.last_write_monotonic["primary"],
+            last_write_monotonic=self.last_write_monotonic["battery"],
         )
         trim_inputs = self._read_trim_inputs(trim_actual_power_w)
         soc_pct = self._read_entity_float(self.entities.battery_soc_entity)
@@ -545,7 +545,7 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         return self._read_actuator_inputs(
             entity_config=self.entities.trim_actuator,
             actual_power_w=trim_actual_power_w,
-            last_write_monotonic=self.last_write_monotonic["trim"],
+            last_write_monotonic=self.last_write_monotonic["inverter"],
         )
 
     def _apply_actuator_result(
@@ -1076,8 +1076,10 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             or inputs.trim_actuator.seconds_since_last_write is None
             else round(inputs.trim_actuator.seconds_since_last_write, 1),
             "last_write_utc": self._most_recent_last_write_iso(),
-            "primary_last_write_utc": self.last_write_iso["primary"],
-            "trim_last_write_utc": self.last_write_iso["trim"],
+            "primary_last_write_utc": self.last_write_iso["battery"],
+            "trim_last_write_utc": self.last_write_iso["inverter"],
+            "battery_last_write_utc": self.last_write_iso["battery"],
+            "inverter_last_write_utc": self.last_write_iso["inverter"],
             "export_fast": result.export_fast,
             "dry_run": self.config.dry_run,
         }

@@ -1,9 +1,9 @@
 from .appdaemon import HaPvOptimization
-from .core import (
+from .controller import PowerControllerCore
+from .models import (
     ControllerConfig,
     ControllerInputs,
     ControllerResult,
-    PowerControllerCore,
 )
 
 __all__ = [

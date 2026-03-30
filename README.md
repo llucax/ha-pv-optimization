@@ -36,6 +36,11 @@ See `docs/ASSUMPTIONS.md` for the current fit and limitations.
 ## Repository layout
 
 - `src/ha_pv_optimization/` - package code
+- `src/ha_pv_optimization/models.py` - typed controller inputs, outputs, and config models
+- `src/ha_pv_optimization/signals.py` - reusable signal helpers and smoothing math
+- `src/ha_pv_optimization/controller.py` - pure control logic and orchestration
+- `src/ha_pv_optimization/core.py` - compatibility re-export layer for the controller API
+- `src/ha_pv_optimization/appdaemon.py` - AppDaemon integration and HA state publishing
 - `tests/` - unit tests for the controller core
 - `examples/` - AppDaemon, secrets, and systemd examples for the NOAH 2000 plus EZ1-M style deployment
 - `docs/` - install, configuration, and assumptions docs for this AppDaemon-focused project
