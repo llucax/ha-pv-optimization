@@ -47,6 +47,12 @@ def _info_messages(app: FakeHaPvOptimization) -> list[str]:
     return [message for level, message in app.logs if level == "INFO"]
 
 
+def _heartbeat_messages(app: FakeHaPvOptimization) -> list[str]:
+    return [
+        message for message in _info_messages(app) if "Control heartbeat" in message
+    ]
+
+
 def _latest_status_update(
     app: FakeHaPvOptimization,
 ) -> tuple[str, Any, dict[str, Any]]:
@@ -369,3 +375,58 @@ def test_status_reports_requested_translated_and_applied_targets() -> None:
     assert status_update[2]["inverter_requested_power_control_w"] == 0.0
     assert status_update[2]["inverter_translated_power_control_w"] == 0.0
     assert status_update[2]["inverter_applied_power_control_w"] == 230.0
+
+
+def test_skip_cycles_emit_startup_and_periodic_heartbeat(monkeypatch: Any) -> None:
+    now = {"value": 0.0}
+    monkeypatch.setattr(appdaemon_module.time, "monotonic", lambda: now["value"])
+
+    app = FakeHaPvOptimization(
+        args={
+            "consumption_entity": "sensor.load",
+            "battery_power_control_entity": "number.battery_limit",
+            "battery_soc_entity": "sensor.battery_soc",
+            "battery_discharge_limit_entity": "number.battery_reserve",
+            "battery_power_step_w": 50,
+            "battery_min_change_w": 50,
+            "battery_min_write_interval_s": 999,
+            "battery_max_increase_per_cycle_w": 500,
+            "battery_max_decrease_per_cycle_w": 500,
+            "battery_emergency_max_decrease_per_cycle_w": 500,
+            "inverter_power_control_entity": "number.inverter_limit",
+            "inverter_power_step_w": 25,
+            "inverter_min_change_w": 25,
+            "inverter_min_write_interval_s": 999,
+            "inverter_max_increase_per_cycle_w": 500,
+            "inverter_max_decrease_per_cycle_w": 500,
+            "inverter_emergency_max_decrease_per_cycle_w": 500,
+            "battery_max_output_w": 800,
+            "inverter_max_output_w": 800,
+            "dry_run": False,
+        },
+        state_map={
+            "sensor.load": "155",
+            "number.battery_limit": {
+                "state": "0",
+                "attributes": {"min": 0, "max": 800, "step": 50},
+            },
+            "number.inverter_limit": {
+                "state": "230",
+                "attributes": {"min": 30, "max": 800, "step": 25},
+            },
+            "sensor.battery_soc": "22",
+            "number.battery_reserve": "20",
+        },
+    )
+
+    app.initialize()
+    app._control_tick({})
+    assert len(_heartbeat_messages(app)) == 1
+
+    now["value"] = 60.0
+    app._control_tick({})
+    assert len(_heartbeat_messages(app)) == 1
+
+    now["value"] = appdaemon_module._CONTROL_HEARTBEAT_INTERVAL_S + 1.0
+    app._control_tick({})
+    assert len(_heartbeat_messages(app)) == 2

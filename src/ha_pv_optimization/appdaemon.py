@@ -97,6 +97,7 @@ def _sensor_state(value: float | int) -> str:
 _DEFAULT_AVAILABILITY_WARNING_GRACE_S = 15 * 60.0
 _DEFAULT_AVAILABILITY_IDLE_OUTPUT_THRESHOLD_W = 20.0
 _DEFAULT_AVAILABILITY_LOW_SUN_ELEVATION_DEG = 10.0
+_CONTROL_HEARTBEAT_INTERVAL_S = 5 * 60.0
 
 
 def _default_power_control_service(entity_id: str) -> str | None:
@@ -148,6 +149,8 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             "battery": None,
             "inverter": None,
         }
+        self.last_heartbeat_monotonic: float | None = None
+        self.startup_heartbeat_pending = True
         self.missing_required_entities: tuple[str, ...] | None = None
         self.missing_required_since_monotonic: float | None = None
         self.missing_required_since_iso: str | None = None
@@ -501,6 +504,10 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
                 f" inverter={self._format_trim_summary(result.trim_actuator)}"
                 f" reason={result.reason}"
             )
+            self.last_heartbeat_monotonic = time.monotonic()
+            self.startup_heartbeat_pending = False
+        else:
+            self._maybe_log_control_heartbeat(result)
 
         self.log(
             "Control cycle"
@@ -516,6 +523,37 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         )
 
         self._publish_result(result, inputs)
+
+    def _maybe_log_control_heartbeat(self, result: ControllerResult) -> None:
+        now_monotonic = time.monotonic()
+        should_log = self.startup_heartbeat_pending
+        if not should_log and self.last_heartbeat_monotonic is None:
+            should_log = True
+        if (
+            not should_log
+            and self.last_heartbeat_monotonic is not None
+            and now_monotonic - self.last_heartbeat_monotonic
+            >= _CONTROL_HEARTBEAT_INTERVAL_S
+        ):
+            should_log = True
+        if not should_log:
+            return
+
+        effective_text = "unknown"
+        if result.effective_target_w is not None:
+            effective_text = f"{int(result.effective_target_w)}W"
+        self.log(
+            "Control heartbeat"
+            f" requested={int(result.requested_target_w)}W"
+            f" planned={int(result.target_limit_w)}W"
+            f" effective={effective_text}"
+            f" current={int(result.current_limit_w)}W"
+            f" battery={self._format_actuator_summary(result.primary_actuator)}"
+            f" inverter={self._format_trim_summary(result.trim_actuator)}"
+            f" reason={result.reason}"
+        )
+        self.last_heartbeat_monotonic = now_monotonic
+        self.startup_heartbeat_pending = False
 
     def _read_actuator_inputs(
         self,
