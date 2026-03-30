@@ -8,7 +8,7 @@ from .models import (
     ControllerInputs,
     ControllerResult,
 )
-from .signals import clamp, ema, quantize, tau_to_alpha
+from .signals import clamp, ema, quantize_down, tau_to_alpha
 
 
 class PowerControllerCore:
@@ -46,7 +46,7 @@ class PowerControllerCore:
                 net_alpha,
             )
 
-        desired_target_w = self.smoothed_consumption_w
+        requested_target_w = self.smoothed_consumption_w
         net_correction_w = 0.0
         export_fast = False
         reason_parts: list[str] = []
@@ -70,19 +70,22 @@ class PowerControllerCore:
                     net_correction_w = gain * net_signal_w
                     reason_parts.append("net_correction")
 
-        desired_target_w += net_correction_w
+        requested_target_w += net_correction_w
 
         if effective_consumption_w <= self.config.zero_output_threshold_w and (
             raw_net_w is None or abs(raw_net_w) <= self.config.deadband_w
         ):
-            desired_target_w = 0.0
+            requested_target_w = 0.0
             reason_parts.append("low_demand_zero")
-
-        allowed_path_cap_w = self._allowed_path_cap_w(inputs)
-        desired_target_w = clamp(desired_target_w, 0.0, allowed_path_cap_w)
 
         battery_allowed_max_output_w = self._allowed_battery_output_w(inputs)
         inverter_allowed_max_output_w = self._allowed_inverter_output_w(inputs)
+        allowed_path_cap_w = self._allowed_path_cap_w(
+            inputs=inputs,
+            battery_allowed_max_output_w=battery_allowed_max_output_w,
+            inverter_allowed_max_output_w=inverter_allowed_max_output_w,
+        )
+        desired_target_w = clamp(requested_target_w, 0.0, allowed_path_cap_w)
 
         battery_result = self._build_actuator_result(
             config=self.config.battery_actuator,
@@ -111,11 +114,16 @@ class PowerControllerCore:
             reason_parts.append("steady")
 
         representative_current_w = self._representative_current_limit(inputs)
+        effective_target_w = self._effective_path_limit_w(
+            battery_result, inverter_result
+        )
 
         return ControllerResult(
             action=action,
             target_limit_w=desired_target_w,
+            requested_target_w=requested_target_w,
             desired_target_w=desired_target_w,
+            effective_target_w=effective_target_w,
             effective_consumption_w=effective_consumption_w,
             smoothed_consumption_w=self.smoothed_consumption_w,
             raw_net_consumption_w=raw_net_w,
@@ -131,16 +139,27 @@ class PowerControllerCore:
             trim_actuator=inverter_result,
         )
 
-    def _allowed_path_cap_w(self, inputs: ControllerInputs) -> float:
+    def _allowed_path_cap_w(
+        self,
+        inputs: ControllerInputs,
+        battery_allowed_max_output_w: float,
+        inverter_allowed_max_output_w: float,
+    ) -> float:
+        allowed_caps: list[float] = []
+        if inputs.battery_actuator is not None:
+            allowed_caps.append(battery_allowed_max_output_w)
         if (
             inputs.inverter_actuator is not None
             and self.config.inverter_actuator is not None
         ):
-            return self.config.inverter_actuator.max_output_w
-        if inputs.battery_actuator is not None:
-            return self.config.battery_actuator.max_output_w
+            allowed_caps.append(inverter_allowed_max_output_w)
+        if allowed_caps:
+            return min(allowed_caps)
         if self.config.inverter_actuator is not None:
-            return self.config.inverter_actuator.max_output_w
+            return min(
+                self.config.battery_actuator.max_output_w,
+                self.config.inverter_actuator.max_output_w,
+            )
         return self.config.battery_actuator.max_output_w
 
     def _allowed_battery_output_w(self, inputs: ControllerInputs) -> float:
@@ -190,12 +209,22 @@ class PowerControllerCore:
                 action="unavailable",
                 reason="unavailable",
                 current_limit_w=None,
+                requested_limit_w=desired_target_w,
+                translated_limit_w=0.0,
                 target_limit_w=0.0,
+                applied_limit_w=None,
                 actual_power_w=None,
                 allowed_max_output_w=allowed_max_output_w,
             )
 
         current_limit_w = inputs.current_limit_w
+        translated_limit_w = self._translated_target_w(
+            config=config,
+            current_limit_w=current_limit_w,
+            desired_target_w=desired_target_w,
+            allowed_max_output_w=allowed_max_output_w,
+            export_fast=export_fast,
+        )
 
         if other_actuator_available and desired_target_w < config.min_output_w:
             return ActuatorResult(
@@ -204,20 +233,15 @@ class PowerControllerCore:
                 action="skip",
                 reason="below_min_supported_by_other",
                 current_limit_w=current_limit_w,
-                target_limit_w=current_limit_w,
+                requested_limit_w=desired_target_w,
+                translated_limit_w=0.0,
+                target_limit_w=0.0,
+                applied_limit_w=current_limit_w,
                 actual_power_w=inputs.actual_power_w,
                 allowed_max_output_w=allowed_max_output_w,
             )
 
-        target_limit_w = self._bounded_target(
-            config=config,
-            current_limit_w=current_limit_w,
-            desired_target_w=desired_target_w,
-            allowed_max_output_w=allowed_max_output_w,
-            export_fast=export_fast,
-        )
-
-        delta_w = abs(target_limit_w - current_limit_w)
+        delta_w = abs(translated_limit_w - current_limit_w)
         if delta_w < config.min_change_w:
             return ActuatorResult(
                 label=config.label,
@@ -225,7 +249,10 @@ class PowerControllerCore:
                 action="skip",
                 reason="delta_below_min",
                 current_limit_w=current_limit_w,
-                target_limit_w=current_limit_w,
+                requested_limit_w=desired_target_w,
+                translated_limit_w=translated_limit_w,
+                target_limit_w=translated_limit_w,
+                applied_limit_w=current_limit_w,
                 actual_power_w=inputs.actual_power_w,
                 allowed_max_output_w=allowed_max_output_w,
             )
@@ -241,7 +268,10 @@ class PowerControllerCore:
                 action="skip",
                 reason="min_write_interval",
                 current_limit_w=current_limit_w,
-                target_limit_w=current_limit_w,
+                requested_limit_w=desired_target_w,
+                translated_limit_w=translated_limit_w,
+                target_limit_w=translated_limit_w,
+                applied_limit_w=current_limit_w,
                 actual_power_w=inputs.actual_power_w,
                 allowed_max_output_w=allowed_max_output_w,
             )
@@ -253,12 +283,15 @@ class PowerControllerCore:
             action=action,
             reason=action,
             current_limit_w=current_limit_w,
-            target_limit_w=target_limit_w,
+            requested_limit_w=desired_target_w,
+            translated_limit_w=translated_limit_w,
+            target_limit_w=translated_limit_w,
+            applied_limit_w=translated_limit_w,
             actual_power_w=inputs.actual_power_w,
             allowed_max_output_w=allowed_max_output_w,
         )
 
-    def _bounded_target(
+    def _translated_target_w(
         self,
         config: ActuatorConfig,
         current_limit_w: float,
@@ -283,18 +316,35 @@ class PowerControllerCore:
                 target_limit_w = current_limit_w - limit_w
 
         target_limit_w = clamp(target_limit_w, lower_bound_w, upper_bound_w)
-        target_limit_w = quantize(
+        target_limit_w = quantize_down(
             target_limit_w,
             config.power_step_w,
             offset=config.min_output_w,
         )
         return clamp(target_limit_w, lower_bound_w, upper_bound_w)
 
+    def _effective_path_limit_w(
+        self,
+        battery_result: ActuatorResult,
+        inverter_result: ActuatorResult | None,
+    ) -> float | None:
+        applied_limits = [
+            result.applied_limit_w
+            for result in (battery_result, inverter_result)
+            if result is not None and result.applied_limit_w is not None
+        ]
+        if not applied_limits:
+            return None
+        return min(applied_limits)
+
     def _representative_current_limit(self, inputs: ControllerInputs) -> float:
-        if inputs.inverter_actuator is not None:
-            return inputs.inverter_actuator.current_limit_w
-        if inputs.battery_actuator is not None:
-            return inputs.battery_actuator.current_limit_w
+        current_limits = [
+            actuator.current_limit_w
+            for actuator in (inputs.battery_actuator, inputs.inverter_actuator)
+            if actuator is not None
+        ]
+        if current_limits:
+            return min(current_limits)
         return 0.0
 
     def _combined_action(
@@ -318,7 +368,7 @@ class PowerControllerCore:
         inverter_result: ActuatorResult | None,
     ) -> list[str]:
         parts: list[str] = []
-        parts.append(f"primary_{battery_result.reason}")
+        parts.append(f"battery_{battery_result.reason}")
         if inverter_result is not None:
-            parts.append(f"trim_{inverter_result.reason}")
+            parts.append(f"inverter_{inverter_result.reason}")
         return parts

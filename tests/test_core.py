@@ -73,7 +73,11 @@ def test_baseline_load_is_added_to_consumption() -> None:
         )
     )
     assert result.target_limit_w == 240.0
-    assert result.primary_actuator.target_limit_w == 250.0
+    assert result.requested_target_w == 240.0
+    assert result.primary_actuator.requested_limit_w == 240.0
+    assert result.primary_actuator.target_limit_w == 200.0
+    assert result.primary_actuator.applied_limit_w == 200.0
+    assert result.effective_target_w == 200.0
     assert result.action == "write"
 
 
@@ -116,10 +120,12 @@ def test_soc_floor_forces_primary_output_to_zero() -> None:
             ),
         )
     )
-    assert result.target_limit_w == 400.0
+    assert result.requested_target_w == 400.0
+    assert result.target_limit_w == 0.0
     assert result.action == "write"
     assert result.primary_allowed_max_output_w == 0.0
     assert result.primary_actuator.target_limit_w == 0.0
+    assert result.effective_target_w == 0.0
 
 
 def test_trim_actuator_absorbs_residual_after_primary_quantization() -> None:
@@ -209,10 +215,12 @@ def test_trim_actuator_handles_change_when_primary_write_interval_blocks() -> No
         )
     )
     assert result.primary_actuator.action == "skip"
-    assert result.primary_actuator.target_limit_w == 300.0
+    assert result.primary_actuator.target_limit_w == 350.0
+    assert result.primary_actuator.applied_limit_w == 300.0
     assert result.trim_actuator is not None
     assert result.trim_actuator.action == "write"
     assert result.trim_actuator.target_limit_w == 350.0
+    assert result.effective_target_w == 300.0
 
 
 def test_trim_actuator_can_run_alone_when_primary_is_unavailable() -> None:
@@ -251,3 +259,55 @@ def test_trim_actuator_can_run_alone_when_primary_is_unavailable() -> None:
     assert result.target_limit_w == 180.0
     assert result.trim_actuator is not None
     assert result.trim_actuator.target_limit_w == 180.0
+
+
+def test_path_cap_is_clamped_by_battery_before_inverter_target() -> None:
+    controller = PowerControllerCore(
+        ControllerConfig(
+            primary_actuator=ActuatorConfig(
+                label="battery",
+                max_output_w=800.0,
+                power_step_w=50.0,
+                min_change_w=50.0,
+                min_write_interval_s=0.0,
+                max_increase_per_cycle_w=500.0,
+                max_decrease_per_cycle_w=500.0,
+                emergency_max_decrease_per_cycle_w=500.0,
+            ),
+            trim_actuator=ActuatorConfig(
+                label="inverter",
+                min_output_w=30.0,
+                max_output_w=800.0,
+                power_step_w=25.0,
+                min_change_w=25.0,
+                min_write_interval_s=0.0,
+                max_increase_per_cycle_w=500.0,
+                max_decrease_per_cycle_w=500.0,
+                emergency_max_decrease_per_cycle_w=500.0,
+            ),
+            consumption_ema_tau_s=1.0,
+        )
+    )
+    result = controller.step(
+        ControllerInputs(
+            consumption_w=155.0,
+            soc_pct=22.0,
+            discharge_limit_pct=20.0,
+            primary_actuator=ActuatorInputs(
+                current_limit_w=0.0,
+                seconds_since_last_write=999.0,
+            ),
+            trim_actuator=ActuatorInputs(
+                current_limit_w=230.0,
+                seconds_since_last_write=999.0,
+            ),
+        )
+    )
+
+    assert result.requested_target_w == 155.0
+    assert result.target_limit_w == 0.0
+    assert result.primary_actuator.target_limit_w == 0.0
+    assert result.trim_actuator is not None
+    assert result.trim_actuator.target_limit_w == 0.0
+    assert result.trim_actuator.reason == "below_min_supported_by_other"
+    assert result.effective_target_w == 0.0

@@ -76,7 +76,10 @@ class ActuatorResult:
     action: str
     reason: str
     current_limit_w: float | None
+    requested_limit_w: float
+    translated_limit_w: float
     target_limit_w: float
+    applied_limit_w: float | None
     actual_power_w: float | None
     allowed_max_output_w: float
 
@@ -85,7 +88,9 @@ class ActuatorResult:
 class ControllerResult:
     action: str
     target_limit_w: float
+    requested_target_w: float
     desired_target_w: float
+    effective_target_w: float | None
     effective_consumption_w: float
     smoothed_consumption_w: float
     raw_net_consumption_w: float | None

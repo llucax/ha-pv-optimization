@@ -488,10 +488,14 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
 
         if result.action in {"write", "dry_run"}:
             action_label = "Dry-run" if result.action == "dry_run" else "Updated"
+            effective_text = "unknown"
+            if result.effective_target_w is not None:
+                effective_text = f"{int(result.effective_target_w)}W"
             self.log(
                 f"{action_label} control targets"
-                f" total={int(result.target_limit_w)}W"
-                f" desired={int(result.desired_target_w)}W"
+                f" requested={int(result.requested_target_w)}W"
+                f" planned={int(result.target_limit_w)}W"
+                f" effective={effective_text}"
                 f" current={int(result.current_limit_w)}W"
                 f" battery={self._format_actuator_summary(result.primary_actuator)}"
                 f" inverter={self._format_trim_summary(result.trim_actuator)}"
@@ -501,8 +505,9 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         self.log(
             "Control cycle"
             f" action={result.action}"
-            f" total_target={int(result.target_limit_w)}W"
-            f" desired={result.desired_target_w:.1f}W"
+            f" requested={result.requested_target_w:.1f}W"
+            f" planned={result.target_limit_w:.1f}W"
+            f" effective={result.effective_target_w}"
             f" consumption={result.effective_consumption_w:.1f}W"
             f" smoothed={result.smoothed_consumption_w:.1f}W"
             f" net={result.raw_net_consumption_w}"
@@ -846,11 +851,17 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         current_text = "None"
         if actuator_result.current_limit_w is not None:
             current_text = f"{int(actuator_result.current_limit_w)}W"
+        applied_text = "None"
+        if actuator_result.applied_limit_w is not None:
+            applied_text = f"{int(actuator_result.applied_limit_w)}W"
         return (
             f"{actuator_result.label}:"
-            f"{actuator_result.action}:"
-            f"{int(actuator_result.target_limit_w)}W"
-            f"(current={current_text})"
+            f"requested={int(actuator_result.requested_limit_w)}W:"
+            f"translated={int(actuator_result.translated_limit_w)}W:"
+            f"applied={applied_text}:"
+            f"action={actuator_result.action}:"
+            f"reason={actuator_result.reason}:"
+            f"current={current_text}"
         )
 
     def _format_trim_summary(self, actuator_result: ActuatorResult | None) -> str:
@@ -986,39 +997,79 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             else trim_result.available,
             "current_power_control_w": round(result.current_limit_w, 1),
             "target_power_control_w": round(result.target_limit_w, 1),
+            "requested_target_power_control_w": round(result.requested_target_w, 1),
             "desired_target_w": round(result.desired_target_w, 1),
+            "effective_target_power_control_w": None
+            if result.effective_target_w is None
+            else round(result.effective_target_w, 1),
             "primary_current_power_control_w": None
             if result.primary_actuator.current_limit_w is None
             else round(result.primary_actuator.current_limit_w, 1),
             "battery_current_power_control_w": None
             if result.primary_actuator.current_limit_w is None
             else round(result.primary_actuator.current_limit_w, 1),
+            "primary_requested_power_control_w": round(
+                result.primary_actuator.requested_limit_w, 1
+            ),
+            "battery_requested_power_control_w": round(
+                result.primary_actuator.requested_limit_w, 1
+            ),
             "primary_target_power_control_w": round(
                 result.primary_actuator.target_limit_w, 1
             ),
             "battery_target_power_control_w": round(
                 result.primary_actuator.target_limit_w, 1
             ),
+            "primary_applied_power_control_w": None
+            if result.primary_actuator.applied_limit_w is None
+            else round(result.primary_actuator.applied_limit_w, 1),
+            "battery_applied_power_control_w": None
+            if result.primary_actuator.applied_limit_w is None
+            else round(result.primary_actuator.applied_limit_w, 1),
             "primary_action": result.primary_actuator.action,
             "battery_action": result.primary_actuator.action,
             "primary_reason": result.primary_actuator.reason,
             "battery_reason": result.primary_actuator.reason,
+            "primary_translated_power_control_w": round(
+                result.primary_actuator.translated_limit_w, 1
+            ),
+            "battery_translated_power_control_w": round(
+                result.primary_actuator.translated_limit_w, 1
+            ),
             "trim_current_power_control_w": None
             if trim_result is None or trim_result.current_limit_w is None
             else round(trim_result.current_limit_w, 1),
             "inverter_current_power_control_w": None
             if trim_result is None or trim_result.current_limit_w is None
             else round(trim_result.current_limit_w, 1),
+            "trim_requested_power_control_w": None
+            if trim_result is None
+            else round(trim_result.requested_limit_w, 1),
+            "inverter_requested_power_control_w": None
+            if trim_result is None
+            else round(trim_result.requested_limit_w, 1),
             "trim_target_power_control_w": None
             if trim_result is None
             else round(trim_result.target_limit_w, 1),
             "inverter_target_power_control_w": None
             if trim_result is None
             else round(trim_result.target_limit_w, 1),
+            "trim_applied_power_control_w": None
+            if trim_result is None or trim_result.applied_limit_w is None
+            else round(trim_result.applied_limit_w, 1),
+            "inverter_applied_power_control_w": None
+            if trim_result is None or trim_result.applied_limit_w is None
+            else round(trim_result.applied_limit_w, 1),
             "trim_action": None if trim_result is None else trim_result.action,
             "inverter_action": None if trim_result is None else trim_result.action,
             "trim_reason": None if trim_result is None else trim_result.reason,
             "inverter_reason": None if trim_result is None else trim_result.reason,
+            "trim_translated_power_control_w": None
+            if trim_result is None
+            else round(trim_result.translated_limit_w, 1),
+            "inverter_translated_power_control_w": None
+            if trim_result is None
+            else round(trim_result.translated_limit_w, 1),
             "raw_consumption_w": round(inputs.consumption_w, 1),
             "effective_consumption_w": round(result.effective_consumption_w, 1),
             "smoothed_consumption_w": round(result.smoothed_consumption_w, 1),

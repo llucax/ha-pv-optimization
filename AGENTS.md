@@ -118,6 +118,7 @@ uv run pytest
 - Do not move Home Assistant service calls into the core controller.
 - Keep the controller numerically conservative and explain any default change.
 - Maintain quantization, clamp behavior, and slew limiting unless the change explicitly redesigns control behavior.
+- When translating a shared path target to per-actuator commands, prefer non-overshooting flooring behavior over nearest-step rounding so the controller does not exceed the intended cap.
 - Preserve `dry_run` semantics for safe rollout.
 - If you add a new control input or config key, thread it through config docs, assumptions, examples, and tests.
 - Treat the topology as `PV -DC-> battery -DC-> inverter -AC-> house`, with battery and inverter acting as two gates on the same output path rather than additive outputs.

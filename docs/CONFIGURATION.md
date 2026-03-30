@@ -64,6 +64,8 @@ Other actuator domains must set `power_control_service` explicitly.
 - `inverter_power_step_w` - inverter-actuator step size in watts; defaults to the inverter entity's numeric `step` attribute when available, otherwise `50`.
 - `inverter_min_change_w` - minimum inverter-actuator target delta before a write is sent; defaults to `inverter_power_step_w`.
 
+Requested path-cap values are floored to each actuator's configured step so translated commands never overshoot the shared target and accidentally increase probable feed-in.
+
 Startup fails if a configured actuator cannot determine `max_output_w`, or if an actuator's max is lower than its min.
 
 ## Control behavior

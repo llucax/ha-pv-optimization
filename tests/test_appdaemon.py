@@ -314,3 +314,58 @@ def test_debug_target_entities_publish_zero_as_string() -> None:
     )
     assert primary_target[1] == "0"
     assert trim_target[1] == "0"
+
+
+def test_status_reports_requested_translated_and_applied_targets() -> None:
+    app = FakeHaPvOptimization(
+        args={
+            "consumption_entity": "sensor.load",
+            "battery_power_control_entity": "number.battery_limit",
+            "battery_soc_entity": "sensor.battery_soc",
+            "battery_discharge_limit_entity": "number.battery_reserve",
+            "battery_power_step_w": 50,
+            "battery_min_change_w": 50,
+            "battery_min_write_interval_s": 999,
+            "battery_max_increase_per_cycle_w": 500,
+            "battery_max_decrease_per_cycle_w": 500,
+            "battery_emergency_max_decrease_per_cycle_w": 500,
+            "inverter_power_control_entity": "number.inverter_limit",
+            "inverter_power_step_w": 25,
+            "inverter_min_change_w": 25,
+            "inverter_min_write_interval_s": 0,
+            "inverter_max_increase_per_cycle_w": 500,
+            "inverter_max_decrease_per_cycle_w": 500,
+            "inverter_emergency_max_decrease_per_cycle_w": 500,
+            "battery_max_output_w": 800,
+            "inverter_max_output_w": 800,
+            "dry_run": False,
+        },
+        state_map={
+            "sensor.load": "155",
+            "number.battery_limit": {
+                "state": "0",
+                "attributes": {"min": 0, "max": 800, "step": 50},
+            },
+            "number.inverter_limit": {
+                "state": "230",
+                "attributes": {"min": 30, "max": 800, "step": 25},
+            },
+            "sensor.battery_soc": "22",
+            "number.battery_reserve": "20",
+        },
+    )
+
+    app.initialize()
+    app._control_tick({})
+
+    assert app.service_calls == []
+    status_update = _latest_status_update(app)
+    assert status_update[2]["requested_target_power_control_w"] == 155.0
+    assert status_update[2]["target_power_control_w"] == 0.0
+    assert status_update[2]["effective_target_power_control_w"] == 0.0
+    assert status_update[2]["battery_requested_power_control_w"] == 0.0
+    assert status_update[2]["battery_translated_power_control_w"] == 0.0
+    assert status_update[2]["battery_applied_power_control_w"] == 0.0
+    assert status_update[2]["inverter_requested_power_control_w"] == 0.0
+    assert status_update[2]["inverter_translated_power_control_w"] == 0.0
+    assert status_update[2]["inverter_applied_power_control_w"] == 230.0
