@@ -470,3 +470,6 @@ def test_control_cycle_can_use_dedicated_user_log() -> None:
     cycle_messages = _messages_for_log(app, log_name="cycle_log")
     assert len(cycle_messages) == 1
     assert "Control cycle" in cycle_messages[0]
+    assert "battery=" in cycle_messages[0]
+    assert "inverter=" in cycle_messages[0]
+    assert "battery_allowed=" in cycle_messages[0]

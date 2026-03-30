@@ -542,13 +542,10 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         self._emit_log(
             "Control cycle"
             f" action={result.action}"
-            f" requested={result.requested_target_w:.1f}W"
-            f" planned={result.target_limit_w:.1f}W"
-            f" effective={result.effective_target_w}"
             f" consumption={result.effective_consumption_w:.1f}W"
             f" smoothed={result.smoothed_consumption_w:.1f}W"
             f" net={result.raw_net_consumption_w}"
-            f" reason={result.reason}",
+            f" {self._control_summary(result)}",
             level=self.logging.control_cycle_log_level,
             log_name=self.logging.control_cycle_log,
         )
@@ -566,6 +563,8 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             f"requested={int(result.requested_target_w)}W"
             f" planned={int(result.target_limit_w)}W"
             f" effective={effective_text}"
+            f" battery_allowed={int(result.battery_allowed_max_output_w)}W"
+            f" inverter_allowed={int(result.inverter_allowed_max_output_w)}W"
             f" current={int(result.current_limit_w)}W"
             f" battery={self._format_actuator_summary(result.primary_actuator)}"
             f" inverter={self._format_trim_summary(result.trim_actuator)}"
@@ -922,6 +921,7 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             applied_text = f"{int(actuator_result.applied_limit_w)}W"
         return (
             f"{actuator_result.label}:"
+            f"allowed={int(actuator_result.allowed_max_output_w)}W:"
             f"requested={int(actuator_result.requested_limit_w)}W:"
             f"translated={int(actuator_result.translated_limit_w)}W:"
             f"applied={applied_text}:"
