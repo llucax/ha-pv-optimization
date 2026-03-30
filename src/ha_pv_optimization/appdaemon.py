@@ -166,8 +166,7 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             "battery": None,
             "inverter": None,
         }
-        self.last_heartbeat_monotonic: float | None = None
-        self.startup_heartbeat_pending = True
+        self.last_control_summary = "state=initialized no-control-cycle-yet"
         self.missing_required_entities: tuple[str, ...] | None = None
         self.missing_required_since_monotonic: float | None = None
         self.missing_required_since_iso: str | None = None
@@ -187,9 +186,16 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             f" inverter={inverter_label},"
             f" dry_run={self.config.dry_run})"
         )
+        self.log(f"Control heartbeat {self.last_control_summary}")
 
         start = dt.datetime.now() + dt.timedelta(seconds=1)
         self.run_every(self._control_tick, start, self.config.control_interval_s)
+        heartbeat_start = start + dt.timedelta(seconds=5)
+        self.run_every(
+            self._heartbeat_tick,
+            heartbeat_start,
+            _CONTROL_HEARTBEAT_INTERVAL_S,
+        )
 
     def _build_entity_config(self) -> EntityConfig:
         battery_actuator = self._build_actuator_entity_config(
@@ -529,23 +535,9 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
 
         if result.action in {"write", "dry_run"}:
             action_label = "Dry-run" if result.action == "dry_run" else "Updated"
-            effective_text = "unknown"
-            if result.effective_target_w is not None:
-                effective_text = f"{int(result.effective_target_w)}W"
-            self.log(
-                f"{action_label} control targets"
-                f" requested={int(result.requested_target_w)}W"
-                f" planned={int(result.target_limit_w)}W"
-                f" effective={effective_text}"
-                f" current={int(result.current_limit_w)}W"
-                f" battery={self._format_actuator_summary(result.primary_actuator)}"
-                f" inverter={self._format_trim_summary(result.trim_actuator)}"
-                f" reason={result.reason}"
-            )
-            self.last_heartbeat_monotonic = time.monotonic()
-            self.startup_heartbeat_pending = False
-        else:
-            self._maybe_log_control_heartbeat(result)
+            summary = self._control_summary(result)
+            self.log(f"{action_label} control targets {summary}")
+        self.last_control_summary = self._control_summary(result)
 
         self._emit_log(
             "Control cycle"
@@ -563,27 +555,15 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
 
         self._publish_result(result, inputs)
 
-    def _maybe_log_control_heartbeat(self, result: ControllerResult) -> None:
-        now_monotonic = time.monotonic()
-        should_log = self.startup_heartbeat_pending
-        if not should_log and self.last_heartbeat_monotonic is None:
-            should_log = True
-        if (
-            not should_log
-            and self.last_heartbeat_monotonic is not None
-            and now_monotonic - self.last_heartbeat_monotonic
-            >= _CONTROL_HEARTBEAT_INTERVAL_S
-        ):
-            should_log = True
-        if not should_log:
-            return
+    def _heartbeat_tick(self, kwargs: dict[str, Any]) -> None:
+        self.log(f"Control heartbeat {self.last_control_summary}")
 
+    def _control_summary(self, result: ControllerResult) -> str:
         effective_text = "unknown"
         if result.effective_target_w is not None:
             effective_text = f"{int(result.effective_target_w)}W"
-        self.log(
-            "Control heartbeat"
-            f" requested={int(result.requested_target_w)}W"
+        return (
+            f"requested={int(result.requested_target_w)}W"
             f" planned={int(result.target_limit_w)}W"
             f" effective={effective_text}"
             f" current={int(result.current_limit_w)}W"
@@ -591,8 +571,6 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             f" inverter={self._format_trim_summary(result.trim_actuator)}"
             f" reason={result.reason}"
         )
-        self.last_heartbeat_monotonic = now_monotonic
-        self.startup_heartbeat_pending = False
 
     def _read_actuator_inputs(
         self,
@@ -736,6 +714,17 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             battery_discharge_limit_pct=discharge_limit_pct,
             sun_state=sun_state,
             sun_elevation_deg=sun_elevation_deg,
+        )
+        expected_reason = (
+            self.missing_required_expected_reason or "missing_required_entity"
+        )
+        available_actuators_text = ",".join(available_actuators) or "none"
+        self.last_control_summary = (
+            "state=blocked"
+            f" missing={','.join(missing_entities)}"
+            f" availability={self._missing_required_availability_state()}"
+            f" reason={expected_reason}"
+            f" available_actuators={available_actuators_text}"
         )
 
         return True

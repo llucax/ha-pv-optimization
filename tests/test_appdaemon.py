@@ -386,9 +386,6 @@ def test_status_reports_requested_translated_and_applied_targets() -> None:
 
 
 def test_skip_cycles_emit_startup_and_periodic_heartbeat(monkeypatch: Any) -> None:
-    now = {"value": 0.0}
-    monkeypatch.setattr(appdaemon_module.time, "monotonic", lambda: now["value"])
-
     app = FakeHaPvOptimization(
         args={
             "consumption_entity": "sensor.load",
@@ -428,16 +425,18 @@ def test_skip_cycles_emit_startup_and_periodic_heartbeat(monkeypatch: Any) -> No
     )
 
     app.initialize()
-    app._control_tick({})
-    assert len(_heartbeat_messages(app)) == 1
+    heartbeat_messages = _heartbeat_messages(app)
+    assert len(heartbeat_messages) == 1
+    assert "state=initialized" in heartbeat_messages[0]
 
-    now["value"] = 60.0
     app._control_tick({})
-    assert len(_heartbeat_messages(app)) == 1
+    app._heartbeat_tick({})
+    heartbeat_messages = _heartbeat_messages(app)
+    assert len(heartbeat_messages) == 2
+    assert "requested=155W" in heartbeat_messages[-1]
 
-    now["value"] = appdaemon_module._CONTROL_HEARTBEAT_INTERVAL_S + 1.0
-    app._control_tick({})
-    assert len(_heartbeat_messages(app)) == 2
+    app._heartbeat_tick({})
+    assert len(_heartbeat_messages(app)) == 3
 
 
 def test_control_cycle_can_use_dedicated_user_log() -> None:
