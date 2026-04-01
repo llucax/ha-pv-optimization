@@ -32,6 +32,7 @@ If either required key is missing, startup fails.
 - `battery_actual_power_entity` - measured power output of the battery actuator; optional, used for debug/status visibility.
 - `inverter_power_control_entity` - optional inverter output-limit entity used as a second gate on the same house-serving power path.
 - `inverter_actual_power_entity` - measured power output of the inverter actuator; optional, used for debug/status visibility.
+- `battery_temperature_entity` - optional battery temperature sensor in celsius; used for time-weighted temperature metrics today and later thermal policy stages.
 - `battery_soc_entity` - battery state of charge sensor in percent; optional, used for reserve protection.
 - `battery_discharge_limit_entity` - battery reserve floor in percent; optional, used together with `battery_soc_entity`.
 
@@ -117,6 +118,8 @@ When both battery inputs are present, the controller:
 
 When required entities disappear, the status entity also reports availability-oriented attributes such as `availability_state`, `expected_missing_reason`, `warning_active`, and missing timestamps so you can distinguish expected overnight/reserve windows from unexpected outages.
 
+The status entity also publishes time-weighted preview metrics alongside the current EMA-based controller metrics, including `tw_consumption_fast_mean_w`, `tw_consumption_slow_q20_w`, `tw_consumption_pre_event_median_w`, `tw_net_fast_mean_w`, `tw_net_slow_q20_w`, and, when configured, `battery_temperature_t5_c` and `battery_temperature_t30_c`.
+
 ## Availability-aware warning behavior
 
 - `availability_warning_grace_s` - seconds to wait before warning after an expected-missing condition clears; default `900`.
@@ -135,6 +138,7 @@ The generic example currently includes these keys:
 - `battery_actual_power_entity`
 - `inverter_power_control_entity`
 - `inverter_actual_power_entity`
+- `battery_temperature_entity`
 - `battery_soc_entity`
 - `battery_discharge_limit_entity`
 - `baseline_load_w`

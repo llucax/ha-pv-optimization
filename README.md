@@ -12,6 +12,8 @@ It is designed for installations where Home Assistant exposes:
 
 The controller smooths demand, applies optional net-balance correction, drives the battery and inverter as two gates on the same house-serving path, rate-limits writes, and exposes debug entities in Home Assistant.
 
+It now also includes a replay runner and time-weighted event-stream helpers so controller changes can be measured against recorded traces before live rollout.
+
 ## Status and transparency
 
 This project was developed and exercised on a real setup built around:
@@ -41,6 +43,7 @@ See `docs/ASSUMPTIONS.md` for the current fit and limitations.
 - `src/ha_pv_optimization/controller.py` - pure control logic and orchestration
 - `src/ha_pv_optimization/core.py` - compatibility re-export layer for the controller API
 - `src/ha_pv_optimization/appdaemon.py` - AppDaemon integration and HA state publishing
+- `src/ha_pv_optimization/replay.py` - trace loading, replay runner, and baseline scorecard generation
 - `tests/` - unit tests for the controller core
 - `examples/` - AppDaemon, secrets, and systemd examples for the NOAH 2000 plus EZ1-M style deployment
 - `docs/` - install, configuration, and assumptions docs for this AppDaemon-focused project
@@ -51,6 +54,17 @@ See `docs/ASSUMPTIONS.md` for the current fit and limitations.
 uv sync --dev
 uv run pytest
 uv run ruff check src tests
+uv run python -m ha_pv_optimization.replay --consumption-csv /path/to/consumption_history.csv
+```
+
+The replay runner is intended to establish a baseline scorecard before controller behavior changes. It can also load optional inverter-output and per-device trace CSVs:
+
+```bash
+uv run python -m ha_pv_optimization.replay \
+  --consumption-csv /path/to/consumption_history.csv \
+  --inverter-output-csv /path/to/inverter_output_history.csv \
+  --per-device-csv /path/to/consumption_per_device_history.csv \
+  --inverter-output-entity sensor.pv_total_power
 ```
 
 For deployment guidance, start with:

@@ -15,6 +15,7 @@ from .models import (
     ControllerInputs,
     ControllerResult,
 )
+from .signals import TimeWeightedSeries
 
 try:
     from appdaemon.plugins.hass.hassapi import (
@@ -29,6 +30,9 @@ except ImportError:  # pragma: no cover
             return None
 
         def run_every(self, callback: Any, start: Any, interval: Any) -> None:
+            return None
+
+        def listen_state(self, callback: Any, **kwargs: Any) -> None:
             return None
 
         def get_state(self, entity_id: str, attribute: str | None = None) -> Any:
@@ -108,6 +112,12 @@ _DEFAULT_AVAILABILITY_WARNING_GRACE_S = 15 * 60.0
 _DEFAULT_AVAILABILITY_IDLE_OUTPUT_THRESHOLD_W = 20.0
 _DEFAULT_AVAILABILITY_LOW_SUN_ELEVATION_DEG = 10.0
 _CONTROL_HEARTBEAT_INTERVAL_S = 5 * 60.0
+_SIGNAL_HISTORY_WINDOW_S = 2 * 60 * 60.0
+_TW_FAST_WINDOW_S = 3.0
+_TW_SLOW_WINDOW_S = 20.0
+_TW_PRE_EVENT_WINDOW_S = 10.0
+_TW_BATTERY_TEMP_SHORT_WINDOW_S = 5 * 60.0
+_TW_BATTERY_TEMP_LONG_WINDOW_S = 30 * 60.0
 
 
 def _default_power_control_service(entity_id: str) -> str | None:
@@ -131,6 +141,7 @@ class ActuatorEntityConfig:
 class EntityConfig:
     consumption_entity: str
     net_consumption_entity: str | None
+    battery_temperature_entity: str | None
     battery_soc_entity: str | None
     battery_discharge_limit_entity: str | None
     primary_actuator: ActuatorEntityConfig
@@ -151,6 +162,17 @@ class LoggingConfig:
     control_cycle_log_level: str
 
 
+@dataclass(frozen=True)
+class TimeWeightedMetrics:
+    consumption_fast_mean_w: float | None
+    consumption_slow_q20_w: float | None
+    consumption_pre_event_median_w: float | None
+    net_fast_mean_w: float | None
+    net_slow_q20_w: float | None
+    battery_temp_t5_c: float | None
+    battery_temp_t30_c: float | None
+
+
 class HaPvOptimization(BaseHass):  # type: ignore[misc]
     def initialize(self) -> None:
         self.entities = self._build_entity_config()
@@ -158,6 +180,7 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         self.availability = self._build_availability_config()
         self.logging = self._build_logging_config()
         self.controller = PowerControllerCore(self.config)
+        self.signal_histories = self._build_signal_histories()
         self.last_write_monotonic: dict[str, float | None] = {
             "battery": None,
             "inverter": None,
@@ -188,6 +211,9 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         )
         self.log(f"Control heartbeat {self.last_control_summary}")
 
+        self._seed_signal_histories()
+        self._register_signal_listeners()
+
         start = dt.datetime.now() + dt.timedelta(seconds=1)
         self.run_every(self._control_tick, start, self.config.control_interval_s)
         heartbeat_start = start + dt.timedelta(seconds=5)
@@ -210,6 +236,9 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             consumption_entity=self._require_entity("consumption_entity"),
             net_consumption_entity=_as_non_empty_str(
                 self.args.get("net_consumption_entity")
+            ),
+            battery_temperature_entity=_as_non_empty_str(
+                self.args.get("battery_temperature_entity")
             ),
             battery_soc_entity=_as_non_empty_str(self.args.get("battery_soc_entity")),
             battery_discharge_limit_entity=_as_non_empty_str(
@@ -459,6 +488,114 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             ),
         )
 
+    def _build_signal_histories(self) -> dict[str, TimeWeightedSeries]:
+        return {
+            "consumption": TimeWeightedSeries(_SIGNAL_HISTORY_WINDOW_S),
+            "net": TimeWeightedSeries(_SIGNAL_HISTORY_WINDOW_S),
+            "battery_temperature": TimeWeightedSeries(_SIGNAL_HISTORY_WINDOW_S),
+        }
+
+    def _seed_signal_histories(self) -> None:
+        timestamp = dt.datetime.now(dt.UTC)
+        self._record_signal_sample(
+            history_key="consumption",
+            entity_id=self.entities.consumption_entity,
+            timestamp=timestamp,
+        )
+        self._record_signal_sample(
+            history_key="net",
+            entity_id=self.entities.net_consumption_entity,
+            timestamp=timestamp,
+        )
+        self._record_signal_sample(
+            history_key="battery_temperature",
+            entity_id=self.entities.battery_temperature_entity,
+            timestamp=timestamp,
+        )
+
+    def _register_signal_listeners(self) -> None:
+        self._register_signal_listener(
+            entity_id=self.entities.consumption_entity,
+            history_key="consumption",
+        )
+        self._register_signal_listener(
+            entity_id=self.entities.net_consumption_entity,
+            history_key="net",
+        )
+        self._register_signal_listener(
+            entity_id=self.entities.battery_temperature_entity,
+            history_key="battery_temperature",
+        )
+
+    def _register_signal_listener(
+        self,
+        *,
+        entity_id: str | None,
+        history_key: str,
+    ) -> None:
+        if entity_id is None:
+            return
+        self.listen_state(
+            self._on_signal_state_change,
+            entity=entity_id,
+            history_key=history_key,
+        )
+
+    def _on_signal_state_change(
+        self,
+        entity: str,
+        attribute: str,
+        old: Any,
+        new: Any,
+        kwargs: dict[str, Any],
+    ) -> None:
+        history_key = str(kwargs["history_key"])
+        value = _as_float(new)
+        if value is None:
+            return
+        self.signal_histories[history_key].update(dt.datetime.now(dt.UTC), value)
+
+    def _record_signal_sample(
+        self,
+        *,
+        history_key: str,
+        entity_id: str | None,
+        timestamp: dt.datetime,
+    ) -> None:
+        if entity_id is None:
+            return
+        value = self._read_entity_float(entity_id)
+        if value is None:
+            return
+        self.signal_histories[history_key].update(timestamp, value)
+
+    def _time_weighted_metrics(self, now: dt.datetime) -> TimeWeightedMetrics:
+        consumption_history = self.signal_histories["consumption"]
+        net_history = self.signal_histories["net"]
+        battery_temp_history = self.signal_histories["battery_temperature"]
+        return TimeWeightedMetrics(
+            consumption_fast_mean_w=consumption_history.mean(_TW_FAST_WINDOW_S, now),
+            consumption_slow_q20_w=consumption_history.quantile(
+                _TW_SLOW_WINDOW_S,
+                q=0.2,
+                now=now,
+            ),
+            consumption_pre_event_median_w=consumption_history.median(
+                _TW_PRE_EVENT_WINDOW_S,
+                now=now,
+            ),
+            net_fast_mean_w=net_history.mean(_TW_FAST_WINDOW_S, now),
+            net_slow_q20_w=net_history.quantile(_TW_SLOW_WINDOW_S, q=0.2, now=now),
+            battery_temp_t5_c=battery_temp_history.mean(
+                _TW_BATTERY_TEMP_SHORT_WINDOW_S,
+                now,
+            ),
+            battery_temp_t30_c=battery_temp_history.mean(
+                _TW_BATTERY_TEMP_LONG_WINDOW_S,
+                now,
+            ),
+        )
+
     def _emit_log(
         self,
         message: str,
@@ -482,6 +619,23 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         return default if value is None else value
 
     def _control_tick(self, kwargs: dict[str, Any]) -> None:
+        now = dt.datetime.now(dt.UTC)
+        self._record_signal_sample(
+            history_key="consumption",
+            entity_id=self.entities.consumption_entity,
+            timestamp=now,
+        )
+        self._record_signal_sample(
+            history_key="net",
+            entity_id=self.entities.net_consumption_entity,
+            timestamp=now,
+        )
+        self._record_signal_sample(
+            history_key="battery_temperature",
+            entity_id=self.entities.battery_temperature_entity,
+            timestamp=now,
+        )
+
         consumption_w = self._read_entity_float(self.entities.consumption_entity)
         primary_actual_power_w = self._read_entity_float(
             self.entities.primary_actuator.actual_power_entity
@@ -550,7 +704,7 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             log_name=self.logging.control_cycle_log,
         )
 
-        self._publish_result(result, inputs)
+        self._publish_result(result, inputs, self._time_weighted_metrics(now))
 
     def _heartbeat_tick(self, kwargs: dict[str, Any]) -> None:
         self.log(f"Control heartbeat {self.last_control_summary}")
@@ -965,6 +1119,7 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         self,
         result: ControllerResult,
         inputs: ControllerInputs,
+        tw_metrics: TimeWeightedMetrics,
     ) -> None:
         state = "running"
         if self.config.dry_run:
@@ -1043,6 +1198,7 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             "inverter_actual_power_entity": None
             if trim_entity is None
             else trim_entity.actual_power_entity,
+            "battery_temperature_entity": self.entities.battery_temperature_entity,
             "battery_soc_entity": self.entities.battery_soc_entity,
             "battery_discharge_limit_entity": (
                 self.entities.battery_discharge_limit_entity
@@ -1139,12 +1295,27 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             "raw_consumption_w": round(inputs.consumption_w, 1),
             "effective_consumption_w": round(result.effective_consumption_w, 1),
             "smoothed_consumption_w": round(result.smoothed_consumption_w, 1),
+            "tw_consumption_fast_mean_w": None
+            if tw_metrics.consumption_fast_mean_w is None
+            else round(tw_metrics.consumption_fast_mean_w, 1),
+            "tw_consumption_slow_q20_w": None
+            if tw_metrics.consumption_slow_q20_w is None
+            else round(tw_metrics.consumption_slow_q20_w, 1),
+            "tw_consumption_pre_event_median_w": None
+            if tw_metrics.consumption_pre_event_median_w is None
+            else round(tw_metrics.consumption_pre_event_median_w, 1),
             "raw_net_consumption_w": None
             if result.raw_net_consumption_w is None
             else round(result.raw_net_consumption_w, 1),
             "smoothed_net_consumption_w": None
             if result.smoothed_net_consumption_w is None
             else round(result.smoothed_net_consumption_w, 1),
+            "tw_net_fast_mean_w": None
+            if tw_metrics.net_fast_mean_w is None
+            else round(tw_metrics.net_fast_mean_w, 1),
+            "tw_net_slow_q20_w": None
+            if tw_metrics.net_slow_q20_w is None
+            else round(tw_metrics.net_slow_q20_w, 1),
             "net_correction_w": round(result.net_correction_w, 1),
             "actual_power_w": None
             if total_actual_power_w is None
@@ -1164,6 +1335,12 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             "battery_soc_pct": None
             if inputs.soc_pct is None
             else round(inputs.soc_pct, 1),
+            "battery_temperature_t5_c": None
+            if tw_metrics.battery_temp_t5_c is None
+            else round(tw_metrics.battery_temp_t5_c, 1),
+            "battery_temperature_t30_c": None
+            if tw_metrics.battery_temp_t30_c is None
+            else round(tw_metrics.battery_temp_t30_c, 1),
             "battery_discharge_limit_pct": None
             if inputs.discharge_limit_pct is None
             else round(inputs.discharge_limit_pct, 1),
@@ -1223,11 +1400,55 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             state=_sensor_state(round(result.smoothed_consumption_w, 1)),
             attributes={"unit_of_measurement": "W"},
         )
+        if tw_metrics.consumption_fast_mean_w is not None:
+            self.set_state(
+                self._debug_entity("tw_consumption_fast_mean"),
+                state=_sensor_state(round(tw_metrics.consumption_fast_mean_w, 1)),
+                attributes={"unit_of_measurement": "W"},
+            )
+        if tw_metrics.consumption_slow_q20_w is not None:
+            self.set_state(
+                self._debug_entity("tw_consumption_slow_q20"),
+                state=_sensor_state(round(tw_metrics.consumption_slow_q20_w, 1)),
+                attributes={"unit_of_measurement": "W"},
+            )
+        if tw_metrics.consumption_pre_event_median_w is not None:
+            self.set_state(
+                self._debug_entity("tw_consumption_pre_event_median"),
+                state=_sensor_state(
+                    round(tw_metrics.consumption_pre_event_median_w, 1)
+                ),
+                attributes={"unit_of_measurement": "W"},
+            )
         if result.smoothed_net_consumption_w is not None:
             self.set_state(
                 self._debug_entity("smoothed_net"),
                 state=_sensor_state(round(result.smoothed_net_consumption_w, 1)),
                 attributes={"unit_of_measurement": "W"},
+            )
+        if tw_metrics.net_fast_mean_w is not None:
+            self.set_state(
+                self._debug_entity("tw_net_fast_mean"),
+                state=_sensor_state(round(tw_metrics.net_fast_mean_w, 1)),
+                attributes={"unit_of_measurement": "W"},
+            )
+        if tw_metrics.net_slow_q20_w is not None:
+            self.set_state(
+                self._debug_entity("tw_net_slow_q20"),
+                state=_sensor_state(round(tw_metrics.net_slow_q20_w, 1)),
+                attributes={"unit_of_measurement": "W"},
+            )
+        if tw_metrics.battery_temp_t5_c is not None:
+            self.set_state(
+                self._debug_entity("battery_temp_t5"),
+                state=_sensor_state(round(tw_metrics.battery_temp_t5_c, 1)),
+                attributes={"unit_of_measurement": "°C"},
+            )
+        if tw_metrics.battery_temp_t30_c is not None:
+            self.set_state(
+                self._debug_entity("battery_temp_t30"),
+                state=_sensor_state(round(tw_metrics.battery_temp_t30_c, 1)),
+                attributes={"unit_of_measurement": "°C"},
             )
 
     def _publish_status(self, state: str, reason: str, **attributes: Any) -> None:

@@ -12,11 +12,13 @@ This file is for coding agents working in this repo.
 ## Project layout
 - `src/ha_pv_optimization/` - installable package code.
 - `src/ha_pv_optimization/models.py` - typed controller config, inputs, and results.
-- `src/ha_pv_optimization/signals.py` - pure signal math and reusable helpers.
+- `src/ha_pv_optimization/signals.py` - pure signal math, time-weighted series, and reusable helpers.
 - `src/ha_pv_optimization/controller.py` - pure controller orchestration and decision logic.
 - `src/ha_pv_optimization/core.py` - compatibility re-export layer for the controller API.
 - `src/ha_pv_optimization/appdaemon.py` - AppDaemon wrapper; keep it thin.
+- `src/ha_pv_optimization/replay.py` - CSV trace loading, replay execution, and baseline scorecards.
 - `tests/` - unit tests for the core logic.
+- `tests/test_signals.py` - focused tests for time-weighted signal handling.
 - `docs/` - assumptions, configuration, and install guidance.
 - `examples/` - opinionated AppDaemon and systemd examples for the NOAH 2000 plus EZ1-M style deployment.
 
@@ -63,9 +65,12 @@ uv run pytest
 - Run one test by node id: `uv run pytest tests/test_core.py::test_fast_export_reduces_output_quickly`
 - Run tests matching an expression: `uv run pytest -k fast_export`
 - Run one file with verbose output: `uv run pytest -vv tests/test_core.py`
+- Run replay tests: `uv run pytest tests/test_replay.py`
 
 ## When to run what
 - For changes in `src/ha_pv_optimization/controller.py`, `src/ha_pv_optimization/models.py`, or `src/ha_pv_optimization/signals.py`, run at least the focused core test file plus lint.
+- For changes in `src/ha_pv_optimization/signals.py`, also run `tests/test_signals.py` and any replay tests affected by the window semantics.
+- For changes in `src/ha_pv_optimization/replay.py`, run replay tests plus the full suite.
 - For behavior changes, add or update tests in `tests/test_core.py`.
 - For wrapper/config/docs changes, run lint and the full test suite unless the change is purely documentation.
 - For packaging or import-path changes, run `uv build` in addition to lint/tests.
@@ -129,6 +134,7 @@ uv run pytest
 - Keep tests fast and isolated; avoid network, filesystem, or AppDaemon runtime dependencies.
 - Follow existing pytest naming style: `test_<behavior>()`.
 - Use one test per behavior branch when possible.
+- Keep replay metrics deterministic and prefer fixture CSV snippets over large trace copies in the package test suite.
 
 ## Documentation expectations
 - Keep `README.md` focused on the NOAH 2000 plus EZ1-M AppDaemon project, not one private installation.

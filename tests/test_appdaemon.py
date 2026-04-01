@@ -13,12 +13,16 @@ class FakeHaPvOptimization(HaPvOptimization):
         self.logs: list[tuple[str, str, dict[str, Any]]] = []
         self.state_updates: list[tuple[str, Any, dict[str, Any]]] = []
         self.service_calls: list[tuple[str, dict[str, Any]]] = []
+        self.state_listeners: list[tuple[Any, dict[str, Any]]] = []
 
     def log(self, message: str, level: str = "INFO", **kwargs: Any) -> None:
         self.logs.append((level, message, kwargs))
 
     def run_every(self, callback: Any, start: Any, interval: Any) -> None:
         return None
+
+    def listen_state(self, callback: Any, **kwargs: Any) -> None:
+        self.state_listeners.append((callback, kwargs))
 
     def get_state(self, entity_id: str, attribute: str | None = None) -> Any:
         value = self.state_map.get(entity_id)
@@ -473,3 +477,52 @@ def test_control_cycle_can_use_dedicated_user_log() -> None:
     assert "battery=" in cycle_messages[0]
     assert "inverter=" in cycle_messages[0]
     assert "battery_allowed=" in cycle_messages[0]
+
+
+def test_time_weighted_metrics_are_published_and_listeners_registered() -> None:
+    app = FakeHaPvOptimization(
+        args={
+            "consumption_entity": "sensor.load",
+            "net_consumption_entity": "sensor.net",
+            "battery_temperature_entity": "sensor.battery_temp",
+            "battery_power_control_entity": "number.battery_limit",
+            "battery_power_step_w": 50,
+            "battery_min_change_w": 50,
+            "battery_min_write_interval_s": 0,
+            "battery_max_increase_per_cycle_w": 500,
+            "battery_max_decrease_per_cycle_w": 500,
+            "battery_emergency_max_decrease_per_cycle_w": 500,
+            "battery_max_output_w": 800,
+            "dry_run": True,
+        },
+        state_map={
+            "sensor.load": "200",
+            "sensor.net": "-20",
+            "sensor.battery_temp": "30",
+            "number.battery_limit": {
+                "state": "100",
+                "attributes": {"min": 0, "max": 800, "step": 50},
+            },
+        },
+    )
+
+    app.initialize()
+
+    listener_entities = sorted(
+        kwargs["entity"] for _, kwargs in app.state_listeners if "entity" in kwargs
+    )
+    assert listener_entities == [
+        "sensor.battery_temp",
+        "sensor.load",
+        "sensor.net",
+    ]
+
+    app._control_tick({})
+    status_update = _latest_status_update(app)
+    assert status_update[2]["tw_consumption_fast_mean_w"] == 200.0
+    assert status_update[2]["tw_consumption_slow_q20_w"] == 200.0
+    assert status_update[2]["tw_consumption_pre_event_median_w"] == 200.0
+    assert status_update[2]["tw_net_fast_mean_w"] == -20.0
+    assert status_update[2]["tw_net_slow_q20_w"] == -20.0
+    assert status_update[2]["battery_temperature_t5_c"] == 30.0
+    assert status_update[2]["battery_temperature_t30_c"] == 30.0

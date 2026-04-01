@@ -29,6 +29,8 @@ ha_pv_optimization:
   # Optional battery safety inputs.
   # Battery state of charge in percent.
   battery_soc_entity: sensor.noah_soc
+  # Battery temperature in celsius for time-weighted preview metrics.
+  # battery_temperature_entity: sensor.noah_bat0_temperature
   # Battery reserve/discharge floor in percent.
   battery_discharge_limit_entity: number.noah_discharge_limit
 
