@@ -77,6 +77,7 @@ uv run pytest
 - For behavior changes, add or update tests in `tests/test_core.py`.
 - For wrapper/config/docs changes, run lint and the full test suite unless the change is purely documentation.
 - For packaging or import-path changes, run `uv build` in addition to lint/tests.
+- For changes likely to affect replay outcomes, rerun the replay command against the site traces and append a new row to the root repo's `reference/replay_scorecard_history.csv`.
 
 ## Coding style
 - Follow existing Ruff formatting; do not hand-format against it.
