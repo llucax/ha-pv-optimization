@@ -4,8 +4,10 @@ import datetime as dt
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
+from .config import load_site_config, site_config_to_appdaemon_args
 from .controller import PowerControllerCore
 from .models import (
     ActuatorConfig,
@@ -175,6 +177,7 @@ class TimeWeightedMetrics:
 
 class HaPvOptimization(BaseHass):  # type: ignore[misc]
     def initialize(self) -> None:
+        self.args = self._load_effective_args(dict(self.args))
         self.entities = self._build_entity_config()
         self.config = self._build_controller_config()
         self.availability = self._build_availability_config()
@@ -254,6 +257,16 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             debug_entity_prefix=_as_non_empty_str(self.args.get("debug_entity_prefix"))
             or "sensor.ha_pv_optimization",
         )
+
+    def _load_effective_args(self, args: dict[str, Any]) -> dict[str, Any]:
+        site_config_path = _as_non_empty_str(args.get("site_config_path"))
+        if site_config_path is None:
+            return args
+
+        site_config = load_site_config(Path(site_config_path))
+        effective_args = site_config_to_appdaemon_args(site_config)
+        effective_args.update(args)
+        return effective_args
 
     def _build_actuator_entity_config(
         self,

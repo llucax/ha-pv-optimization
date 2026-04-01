@@ -47,6 +47,7 @@ Use these files as starting points:
 - `examples/appdaemon.yaml.example`
 - `examples/secrets.yaml.example`
 - `examples/apps.yaml.example`
+- `examples/site.yaml.example`
 - `examples/systemd/ha-pv-optimization.service`
 - `examples/systemd/ha-pv-optimization.env.example`
 
@@ -76,14 +77,25 @@ Every app-specific key is documented in `docs/CONFIGURATION.md`.
 The example includes:
 
 - required AppDaemon loading keys: `module`, `class`
-- required controller entities: `consumption_entity`, `battery_power_control_entity`
-- optional sensors: `net_consumption_entity` (only for a true grid-boundary import/export meter), `battery_actual_power_entity`, `inverter_actual_power_entity`, `battery_soc_entity`, `battery_discharge_limit_entity`
-- optional inverter-actuator entity: `inverter_power_control_entity`
-- optional actuator overrides: `battery_power_control_service`, `battery_power_control_value_key`, `battery_power_control_label`, `inverter_power_control_service`, `inverter_power_control_value_key`, `inverter_power_control_label`
-- optional output range overrides: `battery_min_output_w`, `battery_max_output_w`, `battery_power_step_w`, `inverter_min_output_w`, `inverter_max_output_w`, `inverter_power_step_w`
-- control tuning and safety settings such as `control_interval_s`, `deadband_w`, `min_write_interval_s`, `dry_run`, and availability-warning tuning keys
+- recommended typed-site-config key: `site_config_path`
+- operational toggles such as `dry_run`, `control_cycle_log`, and `control_cycle_log_level`
 
 The defaults assume a NOAH 2000 battery gate and an optional EZ1-M inverter gate on the same house-serving power path.
+
+### `examples/site.yaml.example`
+
+This file is the typed site controller config consumed through `site_config_path`.
+
+It includes:
+
+- `consumption` - visible-load entity mapping
+- `battery` - battery actuator entity mapping and constraints
+- `battery_sensors` - SOC, temperature, and discharge-limit entities
+- `inverter` - inverter actuator entity mapping and constraints
+- `control` - controller tuning values
+- `battery_policy` - current battery-side reserve/derate policy values
+- `availability` - expected-missing warning tuning
+- `logging` - debug entity prefix and optional cycle-log routing
 
 ### `examples/ha_pv_optimization_app.py`
 

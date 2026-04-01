@@ -39,6 +39,7 @@ See `docs/ASSUMPTIONS.md` for the current fit and limitations.
 
 - `src/ha_pv_optimization/` - package code
 - `src/ha_pv_optimization/models.py` - typed controller inputs, outputs, and config models
+- `src/ha_pv_optimization/config.py` - typed site-config loading and conversion helpers
 - `src/ha_pv_optimization/signals.py` - reusable signal helpers and smoothing math
 - `src/ha_pv_optimization/controller.py` - pure control logic and orchestration
 - `src/ha_pv_optimization/core.py` - compatibility re-export layer for the controller API
@@ -84,6 +85,8 @@ A tiny bridge module is still included for deployments that prefer AppDaemon to 
 Example bridge file: `examples/ha_pv_optimization_app.py`
 
 Example app config: `examples/apps.yaml.example`
+
+Example typed site config: `examples/site.yaml.example`
 
 Example AppDaemon config: `examples/appdaemon.yaml.example`
 

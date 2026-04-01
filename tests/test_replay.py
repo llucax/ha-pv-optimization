@@ -5,10 +5,12 @@ from pathlib import Path
 import pytest
 
 from ha_pv_optimization.replay import (
+    GitReference,
     ReplayDataset,
     ReplayInputError,
     ReplayRunner,
     ReplayScenario,
+    append_scorecard_history,
     load_history_csv,
 )
 
@@ -116,3 +118,36 @@ def test_load_history_csv_reports_missing_file() -> None:
 
     with pytest.raises(ReplayInputError, match="Replay CSV not found"):
         load_history_csv(missing_path)
+
+
+def test_append_scorecard_history_creates_csv(tmp_path: Path) -> None:
+    consumption_csv = _write_csv(
+        tmp_path / "consumption.csv",
+        "entity_id,state,last_changed\n"
+        "sensor.total_consumption_power,200,2026-03-28T06:00:00.000Z\n"
+        "sensor.total_consumption_power,200,2026-03-28T06:00:30.000Z\n",
+    )
+    dataset = ReplayDataset.from_csvs(consumption_csv=consumption_csv)
+    run = ReplayRunner.from_defaults().run(dataset, ReplayScenario())
+    history_csv = tmp_path / "history.csv"
+
+    append_scorecard_history(
+        history_csv,
+        run=run,
+        controller_git=GitReference(
+            ref="main",
+            sha="abc123",
+            dirty=False,
+            repo_root="/tmp/repo",
+        ),
+        site_git=None,
+        site_config_path=None,
+        consumption_csv=consumption_csv,
+        inverter_output_csv=None,
+        per_device_csv=None,
+    )
+
+    text = history_csv.read_text(encoding="utf-8")
+    assert "controller_ref" in text
+    assert "main" in text
+    assert "battery_write_count" in text

@@ -18,6 +18,7 @@ ha_pv_optimization:
 - `ha_pv_optimization` - the instance name in `apps.yaml`; you can rename it if you want a different AppDaemon app id.
 - `module` - Python module AppDaemon imports; keep `ha_pv_optimization_app` when using the provided bridge module.
 - `class` - class name AppDaemon instantiates; keep `HaPvOptimization`.
+- `site_config_path` - optional path to a typed site config YAML file; when set, the wrapper loads controller/entity defaults from that file before applying explicit AppDaemon arg overrides.
 
 ## Required entity inputs
 
@@ -132,6 +133,7 @@ The generic example currently includes these keys:
 
 - `module`
 - `class`
+- `site_config_path`
 - `consumption_entity`
 - `net_consumption_entity`
 - `battery_power_control_entity`
@@ -185,4 +187,4 @@ The same example also documents these optional keys in comments because they are
 - `availability_idle_output_threshold_w`
 - `availability_low_sun_elevation_deg`
 
-See `examples/apps.yaml.example` for the complete starting configuration.
+See `examples/apps.yaml.example` for the minimal AppDaemon app block and `examples/site.yaml.example` for the typed site configuration file.

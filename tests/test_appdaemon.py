@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import ha_pv_optimization.appdaemon as appdaemon_module
@@ -477,6 +478,52 @@ def test_control_cycle_can_use_dedicated_user_log() -> None:
     assert "battery=" in cycle_messages[0]
     assert "inverter=" in cycle_messages[0]
     assert "battery_allowed=" in cycle_messages[0]
+
+
+def test_appdaemon_loads_site_config_file(tmp_path: Path) -> None:
+    site_config_path = tmp_path / "site.yaml"
+    site_config_path.write_text(
+        "consumption:\n"
+        "  entity: sensor.site_load\n"
+        "battery:\n"
+        "  power_control_entity: number.site_battery_limit\n"
+        "  max_output_w: 800\n"
+        "inverter:\n"
+        "  power_control_entity: number.site_inverter_limit\n"
+        "  max_output_w: 800\n",
+        encoding="utf-8",
+    )
+    app = FakeHaPvOptimization(
+        args={
+            "module": "ha_pv_optimization_app",
+            "class": "HaPvOptimization",
+            "site_config_path": str(site_config_path),
+            "dry_run": True,
+        },
+        state_map={
+            "sensor.site_load": "200",
+            "number.site_battery_limit": {
+                "state": "0",
+                "attributes": {"min": 0, "max": 800, "step": 50},
+            },
+            "number.site_inverter_limit": {
+                "state": "0",
+                "attributes": {"min": 0, "max": 800, "step": 25},
+            },
+        },
+    )
+
+    app.initialize()
+
+    assert app.entities.consumption_entity == "sensor.site_load"
+    assert (
+        app.entities.primary_actuator.power_control_entity
+        == "number.site_battery_limit"
+    )
+    assert app.entities.trim_actuator is not None
+    assert (
+        app.entities.trim_actuator.power_control_entity == "number.site_inverter_limit"
+    )
 
 
 def test_time_weighted_metrics_are_published_and_listeners_registered() -> None:

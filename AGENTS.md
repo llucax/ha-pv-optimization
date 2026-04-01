@@ -12,6 +12,7 @@ This file is for coding agents working in this repo.
 ## Project layout
 - `src/ha_pv_optimization/` - installable package code.
 - `src/ha_pv_optimization/models.py` - typed controller config, inputs, and results.
+- `src/ha_pv_optimization/config.py` - typed site config models, loader, and conversion helpers.
 - `src/ha_pv_optimization/signals.py` - pure signal math, time-weighted series, and reusable helpers.
 - `src/ha_pv_optimization/controller.py` - pure controller orchestration and decision logic.
 - `src/ha_pv_optimization/core.py` - compatibility re-export layer for the controller API.
@@ -25,6 +26,7 @@ This file is for coding agents working in this repo.
 ## Architecture expectations
 - Keep control logic pure and deterministic in `src/ha_pv_optimization/controller.py`, `src/ha_pv_optimization/models.py`, and `src/ha_pv_optimization/signals.py`.
 - Keep Home Assistant / AppDaemon integration as translation and I/O glue only.
+- Keep typed site config loading in `src/ha_pv_optimization/config.py`; avoid spreading YAML parsing across the wrapper and replay code.
 - Prefer device-specific defaults and config names that match the battery-plus-inverter gate model used by this project.
 - Preserve safety behavior: clamping, deadbands, slew limits, minimum write intervals, and `dry_run`.
 - Document changed assumptions whenever behavior, topology fit, or config semantics change.
@@ -69,6 +71,7 @@ uv run pytest
 
 ## When to run what
 - For changes in `src/ha_pv_optimization/controller.py`, `src/ha_pv_optimization/models.py`, or `src/ha_pv_optimization/signals.py`, run at least the focused core test file plus lint.
+- For changes in `src/ha_pv_optimization/config.py`, run config-related tests plus the full suite.
 - For changes in `src/ha_pv_optimization/signals.py`, also run `tests/test_signals.py` and any replay tests affected by the window semantics.
 - For changes in `src/ha_pv_optimization/replay.py`, run replay tests plus the full suite.
 - For behavior changes, add or update tests in `tests/test_core.py`.

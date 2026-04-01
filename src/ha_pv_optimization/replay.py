@@ -3,11 +3,13 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import subprocess
 import sys
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from .config import controller_config_from_site_config, load_site_config
 from .controller import PowerControllerCore
 from .models import ActuatorInputs, ControllerConfig, ControllerInputs, ControllerResult
 
@@ -192,6 +194,14 @@ class ReplayRun:
     scenario: ReplayScenario
     scorecard: ReplayScorecard
     ticks: tuple[ReplayTick, ...]
+
+
+@dataclass(frozen=True)
+class GitReference:
+    ref: str
+    sha: str
+    dirty: bool
+    repo_root: str
 
 
 class ReplayRunner:
@@ -407,6 +417,82 @@ def _default_replay_config() -> ControllerConfig:
     )
 
 
+def detect_git_reference(path: Path) -> GitReference | None:
+    repo_root = _git_stdout(path, "rev-parse", "--show-toplevel")
+    if repo_root is None:
+        return None
+
+    repo_path = Path(repo_root)
+    sha = _git_stdout(repo_path, "rev-parse", "HEAD")
+    if sha is None:
+        return None
+    tag = _git_stdout(repo_path, "describe", "--tags", "--exact-match")
+    branch = _git_stdout(repo_path, "symbolic-ref", "--quiet", "--short", "HEAD")
+    dirty = bool(_git_stdout(repo_path, "status", "--porcelain"))
+    ref = tag or branch or sha
+    return GitReference(ref=ref, sha=sha, dirty=dirty, repo_root=str(repo_path))
+
+
+def append_scorecard_history(
+    path: Path,
+    *,
+    run: ReplayRun,
+    controller_git: GitReference | None,
+    site_git: GitReference | None,
+    site_config_path: Path | None,
+    consumption_csv: Path,
+    inverter_output_csv: Path | None,
+    per_device_csv: Path | None,
+) -> None:
+    resolved = path.expanduser().resolve(strict=False)
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    row = {
+        "recorded_at_utc": datetime.now(UTC).isoformat(),
+        "controller_ref": "" if controller_git is None else controller_git.ref,
+        "controller_sha": "" if controller_git is None else controller_git.sha,
+        "controller_dirty": ""
+        if controller_git is None
+        else str(controller_git.dirty).lower(),
+        "site_ref": "" if site_git is None else site_git.ref,
+        "site_sha": "" if site_git is None else site_git.sha,
+        "site_dirty": "" if site_git is None else str(site_git.dirty).lower(),
+        "site_config_path": "" if site_config_path is None else str(site_config_path),
+        "consumption_csv": str(consumption_csv),
+        "inverter_output_csv": ""
+        if inverter_output_csv is None
+        else str(inverter_output_csv),
+        "per_device_csv": "" if per_device_csv is None else str(per_device_csv),
+        "consumption_entity": run.scenario.consumption_entity,
+        "inverter_output_entity": ""
+        if run.scenario.inverter_output_entity is None
+        else run.scenario.inverter_output_entity,
+        "net_consumption_entity": ""
+        if run.scenario.net_consumption_entity is None
+        else run.scenario.net_consumption_entity,
+        **{key: value for key, value in asdict(run.scorecard).items()},
+    }
+    fieldnames = list(row)
+    write_header = not resolved.exists()
+    with resolved.open("a", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        if write_header:
+            writer.writeheader()
+        writer.writerow(row)
+
+
+def _git_stdout(path: Path, *args: str) -> str | None:
+    completed = subprocess.run(
+        ["git", "-C", str(path), *args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.strip() or None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Replay the current controller against trace CSVs"
@@ -423,12 +509,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--initial-inverter-limit-w", type=float, default=0.0)
     parser.add_argument("--battery-soc-pct", type=float)
     parser.add_argument("--battery-discharge-limit-pct", type=float)
+    parser.add_argument("--site-config", type=Path)
     parser.add_argument(
         "--strict-csv",
         action="store_true",
         help="Fail on malformed CSV rows instead of skipping them with warnings.",
     )
     parser.add_argument("--output-json", type=Path)
+    parser.add_argument("--history-csv", type=Path)
     args = parser.parse_args(argv)
 
     try:
@@ -438,8 +526,15 @@ def main(argv: list[str] | None = None) -> int:
             per_device_csv=args.per_device_csv,
             skip_invalid_rows=not args.strict_csv,
         )
+        controller_config = _default_replay_config()
+        consumption_entity = args.consumption_entity
+        if args.site_config is not None:
+            site_config = load_site_config(args.site_config)
+            controller_config = controller_config_from_site_config(site_config)
+            consumption_entity = site_config.consumption.entity
+
         scenario = ReplayScenario(
-            consumption_entity=args.consumption_entity,
+            consumption_entity=consumption_entity,
             inverter_output_entity=args.inverter_output_entity,
             net_consumption_entity=args.net_consumption_entity,
             initial_battery_limit_w=args.initial_battery_limit_w,
@@ -447,7 +542,7 @@ def main(argv: list[str] | None = None) -> int:
             battery_soc_pct=args.battery_soc_pct,
             battery_discharge_limit_pct=args.battery_discharge_limit_pct,
         )
-        run = ReplayRunner.from_defaults().run(dataset, scenario)
+        run = ReplayRunner(controller_config).run(dataset, scenario)
     except ReplayInputError as exc:
         parser.exit(2, f"Replay input error: {exc}\n")
 
@@ -455,6 +550,19 @@ def main(argv: list[str] | None = None) -> int:
     text = json.dumps(payload, indent=2, sort_keys=True)
     if args.output_json is not None:
         args.output_json.write_text(text + "\n", encoding="utf-8")
+    if args.history_csv is not None:
+        append_scorecard_history(
+            args.history_csv,
+            run=run,
+            controller_git=detect_git_reference(Path.cwd()),
+            site_git=None
+            if args.site_config is None
+            else detect_git_reference(args.site_config.parent),
+            site_config_path=args.site_config,
+            consumption_csv=args.consumption_csv,
+            inverter_output_csv=args.inverter_output_csv,
+            per_device_csv=args.per_device_csv,
+        )
     print(text)
     return 0
 
