@@ -67,6 +67,8 @@ uv run python -m ha_pv_optimization.replay \
   --inverter-output-entity sensor.pv_total_power
 ```
 
+The loader skips malformed CSV rows by default and prints warnings. Use `--strict-csv` if you want those rows to fail fast instead.
+
 For deployment guidance, start with:
 
 - `docs/INSTALL.md`

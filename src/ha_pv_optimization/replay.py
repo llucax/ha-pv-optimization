@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import sys
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -11,7 +12,13 @@ from .controller import PowerControllerCore
 from .models import ActuatorInputs, ControllerConfig, ControllerInputs, ControllerResult
 
 
+class ReplayInputError(ValueError):
+    pass
+
+
 def _parse_timestamp(value: str) -> datetime:
+    if value is None:
+        raise ReplayInputError("missing last_changed timestamp")
     normalized = value.strip()
     if normalized.endswith("Z"):
         normalized = normalized[:-1] + "+00:00"
@@ -19,6 +26,8 @@ def _parse_timestamp(value: str) -> datetime:
 
 
 def _coerce_float(value: str) -> float:
+    if value is None:
+        raise ReplayInputError("missing numeric state value")
     return float(value.strip())
 
 
@@ -64,12 +73,15 @@ class ReplayDataset:
         consumption_csv: Path,
         inverter_output_csv: Path | None = None,
         per_device_csv: Path | None = None,
+        skip_invalid_rows: bool = True,
     ) -> ReplayDataset:
         signals: dict[str, PiecewiseConstantSignal] = {}
         for csv_path in (consumption_csv, inverter_output_csv, per_device_csv):
             if csv_path is None:
                 continue
-            signals.update(load_history_csv(csv_path))
+            signals.update(
+                load_history_csv(csv_path, skip_invalid_rows=skip_invalid_rows)
+            )
         return cls(signals=signals)
 
     def signal(self, entity_id: str) -> PiecewiseConstantSignal:
@@ -87,17 +99,43 @@ class ReplayDataset:
         return signal.value_at(timestamp)
 
 
-def load_history_csv(path: Path) -> dict[str, PiecewiseConstantSignal]:
+def load_history_csv(
+    path: Path,
+    *,
+    skip_invalid_rows: bool = True,
+) -> dict[str, PiecewiseConstantSignal]:
+    resolved = path.expanduser().resolve(strict=False)
+    if not resolved.exists():
+        raise ReplayInputError(
+            f"Replay CSV not found: {path} (resolved={resolved}, cwd={Path.cwd()})"
+        )
+
     grouped_samples: dict[str, list[TimedSample]] = {}
-    with path.open(newline="", encoding="utf-8") as handle:
+    with resolved.open(newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
-        for row in reader:
-            entity_id = row["entity_id"].strip()
-            sample = TimedSample(
-                timestamp=_parse_timestamp(row["last_changed"]),
-                value=_coerce_float(row["state"]),
-            )
-            grouped_samples.setdefault(entity_id, []).append(sample)
+        for row_number, row in enumerate(reader, start=2):
+            try:
+                entity_id = row["entity_id"]
+                if entity_id is None or not entity_id.strip():
+                    raise ReplayInputError("missing entity_id")
+                sample = TimedSample(
+                    timestamp=_parse_timestamp(row["last_changed"]),
+                    value=_coerce_float(row["state"]),
+                )
+            except (KeyError, ReplayInputError, TypeError, ValueError) as exc:
+                message = (
+                    f"Invalid replay row in {resolved} at line {row_number}: {exc}."
+                    f" Row={row!r}"
+                )
+                if not skip_invalid_rows:
+                    raise ReplayInputError(message) from exc
+                print(f"WARNING: {message}", file=sys.stderr)
+                continue
+
+            grouped_samples.setdefault(entity_id.strip(), []).append(sample)
+
+    if not grouped_samples:
+        raise ReplayInputError(f"Replay CSV has no usable rows: {resolved}")
 
     return {
         entity_id: PiecewiseConstantSignal(
@@ -385,24 +423,34 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--initial-inverter-limit-w", type=float, default=0.0)
     parser.add_argument("--battery-soc-pct", type=float)
     parser.add_argument("--battery-discharge-limit-pct", type=float)
+    parser.add_argument(
+        "--strict-csv",
+        action="store_true",
+        help="Fail on malformed CSV rows instead of skipping them with warnings.",
+    )
     parser.add_argument("--output-json", type=Path)
     args = parser.parse_args(argv)
 
-    dataset = ReplayDataset.from_csvs(
-        consumption_csv=args.consumption_csv,
-        inverter_output_csv=args.inverter_output_csv,
-        per_device_csv=args.per_device_csv,
-    )
-    scenario = ReplayScenario(
-        consumption_entity=args.consumption_entity,
-        inverter_output_entity=args.inverter_output_entity,
-        net_consumption_entity=args.net_consumption_entity,
-        initial_battery_limit_w=args.initial_battery_limit_w,
-        initial_inverter_limit_w=args.initial_inverter_limit_w,
-        battery_soc_pct=args.battery_soc_pct,
-        battery_discharge_limit_pct=args.battery_discharge_limit_pct,
-    )
-    run = ReplayRunner.from_defaults().run(dataset, scenario)
+    try:
+        dataset = ReplayDataset.from_csvs(
+            consumption_csv=args.consumption_csv,
+            inverter_output_csv=args.inverter_output_csv,
+            per_device_csv=args.per_device_csv,
+            skip_invalid_rows=not args.strict_csv,
+        )
+        scenario = ReplayScenario(
+            consumption_entity=args.consumption_entity,
+            inverter_output_entity=args.inverter_output_entity,
+            net_consumption_entity=args.net_consumption_entity,
+            initial_battery_limit_w=args.initial_battery_limit_w,
+            initial_inverter_limit_w=args.initial_inverter_limit_w,
+            battery_soc_pct=args.battery_soc_pct,
+            battery_discharge_limit_pct=args.battery_discharge_limit_pct,
+        )
+        run = ReplayRunner.from_defaults().run(dataset, scenario)
+    except ReplayInputError as exc:
+        parser.exit(2, f"Replay input error: {exc}\n")
+
     payload = asdict(run.scorecard)
     text = json.dumps(payload, indent=2, sort_keys=True)
     if args.output_json is not None:

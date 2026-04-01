@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from ha_pv_optimization.replay import (
     ReplayDataset,
+    ReplayInputError,
     ReplayRunner,
     ReplayScenario,
     load_history_csv,
@@ -76,3 +79,40 @@ def test_replay_runner_produces_deterministic_scorecard(tmp_path: Path) -> None:
     assert run.scorecard.self_consumption_ratio == 0.9166666666666667
     assert run.scorecard.mean_absolute_error_w == 16.666666666666668
     assert run.scorecard.measured_inverter_gap_w == 20.0
+
+
+def test_load_history_csv_skips_invalid_rows_by_default(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    csv_path = _write_csv(
+        tmp_path / "history.csv",
+        "entity_id,state,last_changed\n"
+        "sensor.a,1,2026-03-28T06:00:00.000Z\n"
+        ":qa\n"
+        "sensor.a,2,2026-03-28T06:00:01.000Z\n",
+    )
+
+    signals = load_history_csv(csv_path)
+
+    assert len(signals["sensor.a"].samples) == 2
+    stderr = capsys.readouterr().err
+    assert "Invalid replay row" in stderr
+    assert "line 3" in stderr
+
+
+def test_load_history_csv_can_fail_on_invalid_rows(tmp_path: Path) -> None:
+    csv_path = _write_csv(
+        tmp_path / "history.csv",
+        "entity_id,state,last_changed\n:qa\n",
+    )
+
+    with pytest.raises(ReplayInputError, match="Invalid replay row"):
+        load_history_csv(csv_path, skip_invalid_rows=False)
+
+
+def test_load_history_csv_reports_missing_file() -> None:
+    missing_path = Path("/does/not/exist.csv")
+
+    with pytest.raises(ReplayInputError, match="Replay CSV not found"):
+        load_history_csv(missing_path)
