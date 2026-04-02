@@ -49,7 +49,7 @@ class PowerControllerCore:
         self.smoothed_consumption_w = estimated_load_fast_w
         self.smoothed_net_consumption_w = inputs.tw_net_fast_mean_w
 
-        thermal_state = self._update_thermal_state(inputs)
+        thermal_state, thermal_reason = self._update_thermal_state(inputs)
         desired_min_soc_pct, desired_max_soc_pct, battery_cap_limit_w = (
             self._thermal_limits(thermal_state)
         )
@@ -174,6 +174,7 @@ class PowerControllerCore:
             degraded_mode=degraded_mode,
             degraded_reasons=degraded_reasons,
             thermal_state=thermal_state,
+            thermal_reason=thermal_reason,
             desired_min_soc_pct=desired_min_soc_pct,
             desired_max_soc_pct=desired_max_soc_pct,
             battery_cap_limit_w=battery_cap_limit_w,
@@ -587,15 +588,19 @@ class PowerControllerCore:
 
         return tuple(dict.fromkeys(reasons))
 
-    def _update_thermal_state(self, inputs: ControllerInputs) -> ThermalState:
+    def _update_thermal_state(
+        self,
+        inputs: ControllerInputs,
+    ) -> tuple[ThermalState, str]:
         policy = self.config.thermal_policy
         interval_s = self.config.control_interval_s
         requested_state = self.thermal_state
 
-        if self._very_hot_triggered(inputs, policy):
+        very_hot_reason = self._very_hot_trigger_reason(inputs, policy)
+        if very_hot_reason is not None:
             self.thermal_state = ThermalState.VERY_HOT
             self.thermal_clear_elapsed_s = 0.0
-            return self.thermal_state
+            return self.thermal_state, very_hot_reason
 
         if self.thermal_state == ThermalState.VERY_HOT:
             if self._very_hot_clear(inputs, policy):
@@ -603,18 +608,21 @@ class PowerControllerCore:
                 if self.thermal_clear_elapsed_s >= policy.very_hot_exit_hold_s:
                     requested_state = (
                         ThermalState.HOT
-                        if self._hot_triggered(inputs, policy)
+                        if self._hot_trigger_reason(inputs, policy) is not None
                         else ThermalState.NORMAL
                     )
             else:
                 self.thermal_clear_elapsed_s = 0.0
             self.thermal_state = requested_state
-            return self.thermal_state
+            if self.thermal_state == ThermalState.VERY_HOT:
+                return self.thermal_state, "very_hot_hold"
+            return self.thermal_state, "very_hot_clear_complete"
 
-        if self._hot_triggered(inputs, policy):
+        hot_reason = self._hot_trigger_reason(inputs, policy)
+        if hot_reason is not None:
             self.thermal_state = ThermalState.HOT
             self.thermal_clear_elapsed_s = 0.0
-            return self.thermal_state
+            return self.thermal_state, hot_reason
 
         if self.thermal_state == ThermalState.HOT:
             if self._hot_clear(inputs, policy):
@@ -624,24 +632,28 @@ class PowerControllerCore:
             else:
                 self.thermal_clear_elapsed_s = 0.0
 
-        return self.thermal_state
+        if self.thermal_state == ThermalState.HOT:
+            return self.thermal_state, "hot_hold"
+        return self.thermal_state, "normal"
 
-    def _very_hot_triggered(
+    def _very_hot_trigger_reason(
         self,
         inputs: ControllerInputs,
         policy: ThermalPolicyConfig,
-    ) -> bool:
-        return bool(
-            inputs.battery_high_temp_alarm_active
-            or (
-                inputs.battery_temp_t30_c is not None
-                and inputs.battery_temp_t30_c >= policy.very_hot_enter_t30_c
-            )
-            or (
-                inputs.battery_temp_t5_c is not None
-                and inputs.battery_temp_t5_c >= policy.very_hot_enter_t5_c
-            )
-        )
+    ) -> str | None:
+        if inputs.battery_high_temp_alarm_active:
+            return "high_temp_alarm"
+        if (
+            inputs.battery_temp_t30_c is not None
+            and inputs.battery_temp_t30_c >= policy.very_hot_enter_t30_c
+        ):
+            return "t30_threshold"
+        if (
+            inputs.battery_temp_t5_c is not None
+            and inputs.battery_temp_t5_c >= policy.very_hot_enter_t5_c
+        ):
+            return "t5_threshold"
+        return None
 
     def _very_hot_clear(
         self,
@@ -657,15 +669,17 @@ class PowerControllerCore:
             and inputs.battery_temp_t5_c < policy.very_hot_exit_t5_c
         )
 
-    def _hot_triggered(
+    def _hot_trigger_reason(
         self,
         inputs: ControllerInputs,
         policy: ThermalPolicyConfig,
-    ) -> bool:
-        return bool(
+    ) -> str | None:
+        if (
             inputs.battery_temp_t30_c is not None
             and inputs.battery_temp_t30_c >= policy.hot_enter_t30_c
-        )
+        ):
+            return "t30_threshold"
+        return None
 
     def _hot_clear(
         self,

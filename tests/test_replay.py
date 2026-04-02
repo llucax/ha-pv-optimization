@@ -150,6 +150,7 @@ def test_append_scorecard_history_creates_csv(tmp_path: Path) -> None:
         consumption_csv=consumption_csv,
         inverter_output_csv=None,
         per_device_csv=None,
+        battery_temperature_csv=None,
     )
 
     text = history_csv.read_text(encoding="utf-8")
@@ -212,3 +213,52 @@ def test_replay_runner_uses_site_config_devices_for_feed_forward(
 
     assert run.ticks[0].result.device_feed_forward_w == 0.0
     assert run.ticks[1].result.device_feed_forward_w == 1200.0
+
+
+def test_replay_runner_uses_battery_temperature_trace(tmp_path: Path) -> None:
+    site_config_path = _write_csv(
+        tmp_path / "site.yaml",
+        "consumption:\n"
+        "  entity: sensor.total_consumption_power\n"
+        "battery:\n"
+        "  power_control_entity: number.noah_limit\n"
+        "  max_output_w: 800\n"
+        "battery_sensors:\n"
+        "  temperature_entity: sensor.noah_temp\n"
+        "thermal:\n"
+        "  hot_enter_t30_c: 35\n"
+        "  hot_exit_t30_c: 33\n"
+        "  hot_exit_hold_s: 60\n"
+        "  hot_min_soc_pct: 15\n"
+        "  hot_max_soc_pct: 90\n"
+        "  hot_cap_limit_w: 800\n",
+    )
+    consumption_csv = _write_csv(
+        tmp_path / "consumption.csv",
+        "entity_id,state,last_changed\n"
+        "sensor.total_consumption_power,200,2026-03-28T06:00:00.000Z\n"
+        "sensor.total_consumption_power,200,2026-03-28T06:05:00.000Z\n",
+    )
+    battery_temp_csv = _write_csv(
+        tmp_path / "battery_temp.csv",
+        "entity_id,state,last_changed\n"
+        "sensor.noah_temp,36,2026-03-28T05:30:00.000Z\n"
+        "sensor.noah_temp,36,2026-03-28T06:00:00.000Z\n"
+        "sensor.noah_temp,36,2026-03-28T06:05:00.000Z\n",
+    )
+
+    site_config = load_site_config(site_config_path)
+    dataset = ReplayDataset.from_csvs(
+        consumption_csv=consumption_csv,
+        battery_temperature_csv=battery_temp_csv,
+    )
+    run = ReplayRunner(
+        controller_config_from_site_config(site_config),
+    ).run(
+        dataset,
+        ReplayScenario(
+            battery_temperature_entity=site_config.battery_sensors.temperature_entity,
+        ),
+    )
+
+    assert run.ticks[0].result.thermal_state == "HOT"

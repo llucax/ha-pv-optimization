@@ -158,6 +158,7 @@ class ControllerResult:
     degraded_mode: str
     degraded_reasons: tuple[str, ...]
     thermal_state: ThermalState
+    thermal_reason: str
     desired_min_soc_pct: float
     desired_max_soc_pct: float
     battery_cap_limit_w: float

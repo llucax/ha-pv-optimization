@@ -108,8 +108,12 @@ Legacy EMA/net-correction knobs remain in the config surface for compatibility w
 
 - `control_cycle_log` - optional AppDaemon user-log name for per-cycle `Control cycle ...` diagnostics.
 - `control_cycle_log_level` - level used for those cycle diagnostics; default `DEBUG`.
+- `thermal_log` - optional AppDaemon user-log name for periodic thermal heartbeat diagnostics.
+- `thermal_log_level` - level used for those thermal heartbeat diagnostics; default `DEBUG`.
 
 If `control_cycle_log` is not set, the per-cycle diagnostics stay on the main AppDaemon log at the configured `control_cycle_log_level`. If it is set, those lines are routed to the named AppDaemon user log instead. When that user log is defined without a `filename`, AppDaemon writes it to stdout so it still appears in `journalctl` without creating a separate file.
+
+Thermal state transitions are still logged at `INFO` on the main log. The optional `thermal_log` is for lower-priority thermal heartbeats and detailed subsystem visibility when you want to debug thermal behavior without increasing the noise on the main log.
 
 ## Write-rate protection
 

@@ -139,10 +139,16 @@ class ReplayDataset:
         consumption_csv: Path,
         inverter_output_csv: Path | None = None,
         per_device_csv: Path | None = None,
+        battery_temperature_csv: Path | None = None,
         skip_invalid_rows: bool = True,
     ) -> ReplayDataset:
         signals: dict[str, PiecewiseConstantSignal] = {}
-        for csv_path in (consumption_csv, inverter_output_csv, per_device_csv):
+        for csv_path in (
+            consumption_csv,
+            inverter_output_csv,
+            per_device_csv,
+            battery_temperature_csv,
+        ):
             if csv_path is None:
                 continue
             signals.update(
@@ -217,6 +223,7 @@ class ReplayScenario:
     consumption_entity: str = "sensor.total_consumption_power"
     inverter_output_entity: str | None = None
     net_consumption_entity: str | None = None
+    battery_temperature_entity: str | None = None
     initial_battery_limit_w: float = 0.0
     initial_inverter_limit_w: float = 0.0
     battery_soc_pct: float | None = None
@@ -324,6 +331,11 @@ class ReplayRunner:
                 if scenario.net_consumption_entity is None
                 else dataset.signal(scenario.net_consumption_entity)
             )
+            battery_temp_signal = (
+                None
+                if scenario.battery_temperature_entity is None
+                else dataset.signal(scenario.battery_temperature_entity)
+            )
 
             result = controller.step(
                 ControllerInputs(
@@ -357,6 +369,12 @@ class ReplayRunner:
                     tw_net_slow_q20_w=None
                     if net_signal is None
                     else net_signal.quantile(20.0, 0.2, current_time),
+                    battery_temp_t5_c=None
+                    if battery_temp_signal is None
+                    else battery_temp_signal.mean(5 * 60.0, current_time),
+                    battery_temp_t30_c=None
+                    if battery_temp_signal is None
+                    else battery_temp_signal.mean(30 * 60.0, current_time),
                     soc_pct=scenario.battery_soc_pct,
                     discharge_limit_pct=scenario.battery_discharge_limit_pct,
                     device_feed_forward_w=device_feed_forward_w,
@@ -553,6 +571,7 @@ def append_scorecard_history(
     consumption_csv: Path,
     inverter_output_csv: Path | None,
     per_device_csv: Path | None,
+    battery_temperature_csv: Path | None,
 ) -> None:
     resolved = path.expanduser().resolve(strict=False)
     resolved.parent.mkdir(parents=True, exist_ok=True)
@@ -572,6 +591,9 @@ def append_scorecard_history(
         if inverter_output_csv is None
         else str(inverter_output_csv),
         "per_device_csv": "" if per_device_csv is None else str(per_device_csv),
+        "battery_temperature_csv": ""
+        if battery_temperature_csv is None
+        else str(battery_temperature_csv),
         "consumption_entity": run.scenario.consumption_entity,
         "inverter_output_entity": ""
         if run.scenario.inverter_output_entity is None
@@ -579,6 +601,9 @@ def append_scorecard_history(
         "net_consumption_entity": ""
         if run.scenario.net_consumption_entity is None
         else run.scenario.net_consumption_entity,
+        "battery_temperature_entity": ""
+        if run.scenario.battery_temperature_entity is None
+        else run.scenario.battery_temperature_entity,
         **{key: value for key, value in asdict(run.scorecard).items()},
     }
     fieldnames = list(row)
@@ -610,11 +635,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--consumption-csv", type=Path, required=True)
     parser.add_argument("--inverter-output-csv", type=Path)
     parser.add_argument("--per-device-csv", type=Path)
+    parser.add_argument("--battery-temperature-csv", type=Path)
     parser.add_argument(
         "--consumption-entity", default="sensor.total_consumption_power"
     )
     parser.add_argument("--inverter-output-entity")
     parser.add_argument("--net-consumption-entity")
+    parser.add_argument("--battery-temperature-entity")
     parser.add_argument("--initial-battery-limit-w", type=float, default=0.0)
     parser.add_argument("--initial-inverter-limit-w", type=float, default=0.0)
     parser.add_argument("--battery-soc-pct", type=float)
@@ -634,15 +661,18 @@ def main(argv: list[str] | None = None) -> int:
             consumption_csv=args.consumption_csv,
             inverter_output_csv=args.inverter_output_csv,
             per_device_csv=args.per_device_csv,
+            battery_temperature_csv=args.battery_temperature_csv,
             skip_invalid_rows=not args.strict_csv,
         )
         controller_config = _default_replay_config()
         device_engine = empty_feed_forward_engine()
         consumption_entity = args.consumption_entity
+        battery_temperature_entity = args.battery_temperature_entity
         if args.site_config is not None:
             site_config = load_site_config(args.site_config)
             controller_config = controller_config_from_site_config(site_config)
             consumption_entity = site_config.consumption.entity
+            battery_temperature_entity = site_config.battery_sensors.temperature_entity
             device_engine = DeviceFeedForwardEngine.from_configs(
                 {
                     name: device.to_runtime_config()
@@ -654,6 +684,7 @@ def main(argv: list[str] | None = None) -> int:
             consumption_entity=consumption_entity,
             inverter_output_entity=args.inverter_output_entity,
             net_consumption_entity=args.net_consumption_entity,
+            battery_temperature_entity=battery_temperature_entity,
             initial_battery_limit_w=args.initial_battery_limit_w,
             initial_inverter_limit_w=args.initial_inverter_limit_w,
             battery_soc_pct=args.battery_soc_pct,
@@ -682,6 +713,7 @@ def main(argv: list[str] | None = None) -> int:
             consumption_csv=args.consumption_csv,
             inverter_output_csv=args.inverter_output_csv,
             per_device_csv=args.per_device_csv,
+            battery_temperature_csv=args.battery_temperature_csv,
         )
     print(text)
     return 0

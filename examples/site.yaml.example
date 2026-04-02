@@ -96,6 +96,8 @@ availability:
 
 logging:
   debug_entity_prefix: sensor.ha_pv_optimization
+  # thermal_log: thermal_log
+  # thermal_log_level: INFO
 
 devices:
   microwave:

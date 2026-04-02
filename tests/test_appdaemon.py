@@ -66,6 +66,17 @@ def _heartbeat_messages(app: FakeHaPvOptimization) -> list[str]:
     ]
 
 
+def _rail_service_calls(
+    app: FakeHaPvOptimization,
+) -> list[tuple[str, dict[str, Any]]]:
+    return [
+        call
+        for call in app.service_calls
+        if call[1].get("entity_id")
+        in {"number.discharge_limit", "number.charging_limit"}
+    ]
+
+
 def _latest_status_update(
     app: FakeHaPvOptimization,
 ) -> tuple[str, Any, dict[str, Any]]:
@@ -785,7 +796,152 @@ def test_thermal_policy_writes_soc_rails() -> None:
     ) in app.service_calls
     status_update = _latest_status_update(app)
     assert status_update[2]["thermal_state"] == "HOT"
+    assert status_update[2]["thermal_reason"] == "t30_threshold"
     assert status_update[2]["desired_min_soc_pct"] == 15.0
     assert status_update[2]["desired_max_soc_pct"] == 90.0
     assert status_update[2]["battery_min_soc_action"] == "write"
     assert status_update[2]["battery_max_soc_action"] == "write"
+
+
+def test_soc_rail_writes_are_deduplicated_until_retry_window() -> None:
+    app = FakeHaPvOptimization(
+        args={
+            "consumption_entity": "sensor.load",
+            "battery_power_control_entity": "number.battery_limit",
+            "battery_temperature_entity": "sensor.battery_temp",
+            "battery_discharge_limit_entity": "number.discharge_limit",
+            "battery_charging_limit_entity": "number.charging_limit",
+            "battery_max_output_w": 800,
+            "battery_power_step_w": 50,
+            "battery_min_change_w": 50,
+            "battery_min_write_interval_s": 0,
+            "battery_max_increase_per_cycle_w": 500,
+            "battery_max_decrease_per_cycle_w": 500,
+            "battery_emergency_max_decrease_per_cycle_w": 500,
+            "thermal_hot_enter_t30_c": 35,
+            "thermal_hot_exit_t30_c": 33,
+            "thermal_hot_exit_hold_s": 60,
+            "thermal_hot_min_soc_pct": 15,
+            "thermal_hot_max_soc_pct": 90,
+            "thermal_hot_cap_limit_w": 800,
+            "dry_run": False,
+        },
+        state_map={
+            "sensor.load": "200",
+            "sensor.battery_temp": "36",
+            "number.battery_limit": {
+                "state": "100",
+                "attributes": {"min": 0, "max": 800, "step": 50},
+            },
+            "number.discharge_limit": {
+                "state": "10",
+                "attributes": {"min": 0, "max": 30, "step": 1},
+            },
+            "number.charging_limit": {
+                "state": "100",
+                "attributes": {"min": 70, "max": 100, "step": 1},
+            },
+        },
+    )
+
+    app.initialize()
+    app._control_tick({})
+    first_calls = list(_rail_service_calls(app))
+    app._control_tick({})
+
+    assert _rail_service_calls(app) == first_calls
+    status_update = _latest_status_update(app)
+    assert status_update[2]["battery_min_soc_action"] == "pending"
+    assert status_update[2]["battery_max_soc_action"] == "pending"
+
+
+def test_soc_rail_drift_is_reapplied_immediately() -> None:
+    app = FakeHaPvOptimization(
+        args={
+            "consumption_entity": "sensor.load",
+            "battery_power_control_entity": "number.battery_limit",
+            "battery_temperature_entity": "sensor.battery_temp",
+            "battery_discharge_limit_entity": "number.discharge_limit",
+            "battery_charging_limit_entity": "number.charging_limit",
+            "battery_max_output_w": 800,
+            "battery_power_step_w": 50,
+            "battery_min_change_w": 50,
+            "battery_min_write_interval_s": 0,
+            "battery_max_increase_per_cycle_w": 500,
+            "battery_max_decrease_per_cycle_w": 500,
+            "battery_emergency_max_decrease_per_cycle_w": 500,
+            "thermal_hot_enter_t30_c": 35,
+            "thermal_hot_exit_t30_c": 33,
+            "thermal_hot_exit_hold_s": 60,
+            "thermal_hot_min_soc_pct": 15,
+            "thermal_hot_max_soc_pct": 90,
+            "thermal_hot_cap_limit_w": 800,
+            "dry_run": False,
+        },
+        state_map={
+            "sensor.load": "200",
+            "sensor.battery_temp": "36",
+            "number.battery_limit": {
+                "state": "100",
+                "attributes": {"min": 0, "max": 800, "step": 50},
+            },
+            "number.discharge_limit": {
+                "state": "10",
+                "attributes": {"min": 0, "max": 30, "step": 1},
+            },
+            "number.charging_limit": {
+                "state": "100",
+                "attributes": {"min": 70, "max": 100, "step": 1},
+            },
+        },
+    )
+
+    app.initialize()
+    app._control_tick({})
+    app.state_map["number.discharge_limit"] = {
+        "state": "15",
+        "attributes": {"min": 0, "max": 30, "step": 1},
+    }
+    app.state_map["number.charging_limit"] = {
+        "state": "90",
+        "attributes": {"min": 70, "max": 100, "step": 1},
+    }
+    app._control_tick({})
+    calls_after_alignment = len(_rail_service_calls(app))
+
+    app.state_map["number.discharge_limit"] = {
+        "state": "10",
+        "attributes": {"min": 0, "max": 30, "step": 1},
+    }
+    app._control_tick({})
+
+    assert len(_rail_service_calls(app)) == calls_after_alignment + 1
+    assert _rail_service_calls(app)[-1] == (
+        "number/set_value",
+        {"entity_id": "number.discharge_limit", "value": 15},
+    )
+
+
+def test_thermal_heartbeat_can_use_dedicated_logger() -> None:
+    app = FakeHaPvOptimization(
+        args={
+            "consumption_entity": "sensor.load",
+            "battery_power_control_entity": "number.battery_limit",
+            "thermal_log": "thermal_log",
+            "thermal_log_level": "INFO",
+            "dry_run": True,
+        },
+        state_map={
+            "sensor.load": "200",
+            "number.battery_limit": {
+                "state": "0",
+                "attributes": {"min": 0, "max": 800, "step": 50},
+            },
+        },
+    )
+
+    app.initialize()
+    app._thermal_heartbeat_tick({})
+
+    thermal_messages = _messages_for_log(app, log_name="thermal_log")
+    assert any("Thermal heartbeat" in message for message in thermal_messages)

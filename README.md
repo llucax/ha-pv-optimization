@@ -66,6 +66,7 @@ uv run python -m ha_pv_optimization.replay \
   --consumption-csv /path/to/consumption_history.csv \
   --inverter-output-csv /path/to/inverter_output_history.csv \
   --per-device-csv /path/to/consumption_per_device_history.csv \
+  --battery-temperature-csv /path/to/battery_temperature_history.csv \
   --inverter-output-entity sensor.pv_total_power
 ```
 

@@ -77,6 +77,7 @@ uv run pytest
 - For changes in `src/ha_pv_optimization/signals.py`, also run `tests/test_signals.py` and any replay tests affected by the window semantics.
 - For changes in `src/ha_pv_optimization/device_models.py`, run `tests/test_device_models.py` and replay if the configured device set changes.
 - For changes in `src/ha_pv_optimization/replay.py`, run replay tests plus the full suite.
+- For changes in thermal policy or battery-temperature handling, rerun replay with the battery temperature trace when available.
 - For behavior changes, add or update tests in `tests/test_core.py`.
 - For wrapper/config/docs changes, run lint and the full test suite unless the change is purely documentation.
 - For packaging or import-path changes, run `uv build` in addition to lint/tests.

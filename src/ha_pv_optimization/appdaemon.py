@@ -121,7 +121,9 @@ _DEFAULT_AVAILABILITY_WARNING_GRACE_S = 15 * 60.0
 _DEFAULT_AVAILABILITY_IDLE_OUTPUT_THRESHOLD_W = 20.0
 _DEFAULT_AVAILABILITY_LOW_SUN_ELEVATION_DEG = 10.0
 _CONTROL_HEARTBEAT_INTERVAL_S = 5 * 60.0
+_THERMAL_HEARTBEAT_INTERVAL_S = 15 * 60.0
 _COMMAND_MISMATCH_GRACE_S = 30.0
+_SOC_RAIL_RETRY_INTERVAL_S = 60.0
 _SIGNAL_HISTORY_WINDOW_S = 2 * 60 * 60.0
 _TW_FAST_WINDOW_S = 3.0
 _TW_SLOW_WINDOW_S = 20.0
@@ -173,6 +175,8 @@ class AvailabilityConfig:
 class LoggingConfig:
     control_cycle_log: str | None
     control_cycle_log_level: str
+    thermal_log: str | None
+    thermal_log_level: str
 
 
 @dataclass(frozen=True)
@@ -213,8 +217,21 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             "battery": None,
             "inverter": None,
         }
+        self.last_soc_rail_target_pct: dict[str, int | None] = {
+            "min_soc": None,
+            "max_soc": None,
+        }
+        self.last_soc_rail_write_monotonic: dict[str, float | None] = {
+            "min_soc": None,
+            "max_soc": None,
+        }
+        self.last_soc_rail_observed_pct: dict[str, int | None] = {
+            "min_soc": None,
+            "max_soc": None,
+        }
         self.last_reported_thermal_state: ThermalState | None = None
         self.last_control_summary = "state=initialized no-control-cycle-yet"
+        self.last_thermal_summary = "state=initialized no-thermal-cycle-yet"
         self.missing_required_entities: tuple[str, ...] | None = None
         self.missing_required_since_monotonic: float | None = None
         self.missing_required_since_iso: str | None = None
@@ -235,6 +252,11 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             f" dry_run={self.config.dry_run})"
         )
         self.log(f"Control heartbeat {self.last_control_summary}")
+        self._emit_thermal_log(
+            f"Thermal heartbeat {self.last_thermal_summary}",
+            level="INFO",
+            force_main=True,
+        )
 
         self._seed_signal_histories()
         self._register_signal_listeners()
@@ -247,6 +269,12 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             self._heartbeat_tick,
             heartbeat_start,
             _CONTROL_HEARTBEAT_INTERVAL_S,
+        )
+        thermal_heartbeat_start = start + dt.timedelta(seconds=10)
+        self.run_every(
+            self._thermal_heartbeat_tick,
+            thermal_heartbeat_start,
+            _THERMAL_HEARTBEAT_INTERVAL_S,
         )
 
     def _build_entity_config(self) -> EntityConfig:
@@ -613,6 +641,11 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
                 self.args.get("control_cycle_log_level"),
                 default="DEBUG",
             ),
+            thermal_log=_as_non_empty_str(self.args.get("thermal_log")),
+            thermal_log_level=_normalized_log_level(
+                self.args.get("thermal_log_level"),
+                default="DEBUG",
+            ),
         )
 
     def _build_signal_histories(self) -> dict[str, TimeWeightedSeries]:
@@ -777,6 +810,18 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             return
         self.log(message, level=level, log=log_name)
 
+    def _emit_thermal_log(
+        self,
+        message: str,
+        *,
+        level: str = "DEBUG",
+        force_main: bool = False,
+    ) -> None:
+        if force_main or self.logging.thermal_log is None:
+            self.log(message, level=level)
+            return
+        self.log(message, level=level, log=self.logging.thermal_log)
+
     def _require_entity(self, key: str) -> str:
         value = _as_non_empty_str(self.args.get(key))
         if value is None:
@@ -886,14 +931,35 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         )
 
         if result.thermal_state != self.last_reported_thermal_state:
-            self.log(
+            self._emit_thermal_log(
                 "Thermal state changed"
                 f" state={result.thermal_state}"
+                f" reason={result.thermal_reason}"
+                f" t5={tw_metrics.battery_temp_t5_c}"
+                f" t30={tw_metrics.battery_temp_t30_c}"
+                f" heating={inputs.battery_heating_active}"
+                f" high_temp_alarm={inputs.battery_high_temp_alarm_active}"
                 f" desired_min_soc={int(result.desired_min_soc_pct)}%"
                 f" desired_max_soc={int(result.desired_max_soc_pct)}%"
-                f" battery_cap_limit={int(result.battery_cap_limit_w)}W"
+                f" battery_cap_limit={int(result.battery_cap_limit_w)}W",
+                level="INFO",
+                force_main=True,
             )
             self.last_reported_thermal_state = result.thermal_state
+
+        self.last_thermal_summary = (
+            f"state={result.thermal_state}"
+            f" reason={result.thermal_reason}"
+            f" t5={tw_metrics.battery_temp_t5_c}"
+            f" t30={tw_metrics.battery_temp_t30_c}"
+            f" heating={inputs.battery_heating_active}"
+            f" high_temp_alarm={inputs.battery_high_temp_alarm_active}"
+            f" desired_min_soc={int(result.desired_min_soc_pct)}%"
+            f" desired_max_soc={int(result.desired_max_soc_pct)}%"
+            f" battery_cap_limit={int(result.battery_cap_limit_w)}W"
+            f" min_soc_action={min_soc_action}"
+            f" max_soc_action={max_soc_action}"
+        )
 
         self._apply_actuator_result(
             entity_config=self.entities.primary_actuator,
@@ -940,6 +1006,14 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
 
     def _heartbeat_tick(self, kwargs: dict[str, Any]) -> None:
         self.log(f"Control heartbeat {self.last_control_summary}")
+
+    def _thermal_heartbeat_tick(self, kwargs: dict[str, Any]) -> None:
+        if self.logging.thermal_log is None:
+            return
+        self._emit_thermal_log(
+            f"Thermal heartbeat {self.last_thermal_summary}",
+            level=self.logging.thermal_log_level,
+        )
 
     def _control_summary(
         self,
@@ -1102,8 +1176,16 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             return "unconfigured"
 
         desired_value = int(round(desired_pct))
-        if current_pct is not None and int(round(current_pct)) == desired_value:
+        current_value = None if current_pct is None else int(round(current_pct))
+        if current_value == desired_value:
+            self.last_soc_rail_target_pct[label] = desired_value
+            self.last_soc_rail_observed_pct[label] = current_value
             return "aligned"
+
+        now_monotonic = time.monotonic()
+        last_target = self.last_soc_rail_target_pct[label]
+        last_write_monotonic = self.last_soc_rail_write_monotonic[label]
+        last_observed = self.last_soc_rail_observed_pct[label]
 
         service = _default_power_control_service(entity_id)
         if service is None:
@@ -1112,13 +1194,32 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         if self.config.dry_run:
             return "dry_run"
 
+        write_reason = "target_changed"
+        if last_target == desired_value:
+            if current_value != last_observed and current_value is not None:
+                write_reason = "reconcile_drift"
+            elif (
+                last_write_monotonic is not None
+                and now_monotonic - last_write_monotonic < _SOC_RAIL_RETRY_INTERVAL_S
+            ):
+                self.last_soc_rail_observed_pct[label] = current_value
+                return "pending"
+            else:
+                write_reason = "retry"
+
         self.call_service(service, entity_id=entity_id, value=desired_value)
-        self.log(
+        self.last_soc_rail_target_pct[label] = desired_value
+        self.last_soc_rail_write_monotonic[label] = now_monotonic
+        self.last_soc_rail_observed_pct[label] = current_value
+        self._emit_thermal_log(
             f"Updated {label} rail"
             f" entity={entity_id}"
             f" target={desired_value}%"
-            f" current={None if current_pct is None else int(round(current_pct))}%"
+            f" current={current_value}%"
             f" thermal={thermal_state}"
+            f" write_reason={write_reason}",
+            level="INFO",
+            force_main=True,
         )
         return "write"
 
@@ -1608,6 +1709,7 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             "degraded_mode": degraded_mode,
             "degraded_reasons": list(degraded_reasons),
             "thermal_state": result.thermal_state,
+            "thermal_reason": result.thermal_reason,
             "desired_min_soc_pct": round(result.desired_min_soc_pct, 1),
             "desired_max_soc_pct": round(result.desired_max_soc_pct, 1),
             "battery_cap_limit_w": round(result.battery_cap_limit_w, 1),

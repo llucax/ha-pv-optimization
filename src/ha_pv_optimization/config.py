@@ -356,6 +356,8 @@ class LoggingSiteConfig:
     debug_entity_prefix: str = "sensor.ha_pv_optimization"
     control_cycle_log: str | None = None
     control_cycle_log_level: str | None = None
+    thermal_log: str | None = None
+    thermal_log_level: str | None = None
 
     @classmethod
     def from_mapping(cls, mapping: dict[str, Any] | None) -> LoggingSiteConfig:
@@ -366,6 +368,8 @@ class LoggingSiteConfig:
             or "sensor.ha_pv_optimization",
             control_cycle_log=_optional_str(mapping, "control_cycle_log"),
             control_cycle_log_level=_optional_str(mapping, "control_cycle_log_level"),
+            thermal_log=_optional_str(mapping, "thermal_log"),
+            thermal_log_level=_optional_str(mapping, "thermal_log_level"),
         )
 
 
@@ -690,6 +694,8 @@ def site_config_to_appdaemon_args(site_config: SiteConfig) -> dict[str, Any]:
         "debug_entity_prefix": site_config.logging.debug_entity_prefix,
         "control_cycle_log": site_config.logging.control_cycle_log,
         "control_cycle_log_level": site_config.logging.control_cycle_log_level,
+        "thermal_log": site_config.logging.thermal_log,
+        "thermal_log_level": site_config.logging.thermal_log_level,
     }
 
     if site_config.inverter is not None:
