@@ -121,6 +121,13 @@ When required entities disappear, the status entity also reports availability-or
 
 The status entity also publishes time-weighted preview metrics alongside the current EMA-based controller metrics, including `tw_consumption_fast_mean_w`, `tw_consumption_slow_q20_w`, `tw_consumption_pre_event_median_w`, `tw_net_fast_mean_w`, `tw_net_slow_q20_w`, and, when configured, `battery_temperature_t5_c` and `battery_temperature_t30_c`.
 
+Dual-gate planning diagnostics are also published, including `degraded_mode`, `degraded_reasons`, `battery_command_mismatch_reason`, `battery_command_mismatch_w`, `inverter_command_mismatch_reason`, and `inverter_command_mismatch_w`.
+
+Current mismatch classification is heuristic:
+
+- `probable_rejected_command` means the actuator still matches the pre-command observed value after the grace window, so the controller write appears not to have taken effect.
+- `probable_external_override` means the actuator moved away from the controller target to a third value after the grace window, which likely indicates either a schedule override or a manual override.
+
 ## Availability-aware warning behavior
 
 - `availability_warning_grace_s` - seconds to wait before warning after an expected-missing condition clears; default `900`.

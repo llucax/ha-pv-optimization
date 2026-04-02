@@ -49,6 +49,9 @@ class ActuatorInputs:
     current_limit_w: float
     actual_power_w: float | None = None
     seconds_since_last_write: float | None = None
+    last_command_target_w: float | None = None
+    command_mismatch_reason: str | None = None
+    command_mismatch_w: float | None = None
 
 
 @dataclass
@@ -91,6 +94,8 @@ class ControllerResult:
     requested_target_w: float
     desired_target_w: float
     effective_target_w: float | None
+    degraded_mode: str
+    degraded_reasons: tuple[str, ...]
     effective_consumption_w: float
     smoothed_consumption_w: float
     raw_net_consumption_w: float | None

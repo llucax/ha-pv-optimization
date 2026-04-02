@@ -126,6 +126,7 @@ def test_soc_floor_forces_primary_output_to_zero() -> None:
     assert result.primary_allowed_max_output_w == 0.0
     assert result.primary_actuator.target_limit_w == 0.0
     assert result.effective_target_w == 0.0
+    assert result.degraded_mode == "battery_limited"
 
 
 def test_trim_actuator_absorbs_residual_after_primary_quantization() -> None:
@@ -221,6 +222,7 @@ def test_trim_actuator_handles_change_when_primary_write_interval_blocks() -> No
     assert result.trim_actuator.action == "write"
     assert result.trim_actuator.target_limit_w == 350.0
     assert result.effective_target_w == 300.0
+    assert result.degraded_mode == "battery_not_enforcing_target"
 
 
 def test_trim_actuator_can_run_alone_when_primary_is_unavailable() -> None:
@@ -311,3 +313,4 @@ def test_path_cap_is_clamped_by_battery_before_inverter_target() -> None:
     assert result.trim_actuator.target_limit_w == 0.0
     assert result.trim_actuator.reason == "below_min_supported_by_other"
     assert result.effective_target_w == 0.0
+    assert result.degraded_mode == "inverter_not_enforcing_target,battery_limited"

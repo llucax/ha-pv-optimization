@@ -117,6 +117,15 @@ class PowerControllerCore:
         effective_target_w = self._effective_path_limit_w(
             battery_result, inverter_result
         )
+        degraded_reasons = self._degraded_reasons(
+            requested_target_w=requested_target_w,
+            battery_result=battery_result,
+            inverter_result=inverter_result,
+            inverter_expected=self.config.inverter_actuator is not None,
+        )
+        degraded_mode = "nominal"
+        if degraded_reasons:
+            degraded_mode = ",".join(degraded_reasons)
 
         return ControllerResult(
             action=action,
@@ -124,6 +133,8 @@ class PowerControllerCore:
             requested_target_w=requested_target_w,
             desired_target_w=desired_target_w,
             effective_target_w=effective_target_w,
+            degraded_mode=degraded_mode,
+            degraded_reasons=degraded_reasons,
             effective_consumption_w=effective_consumption_w,
             smoothed_consumption_w=self.smoothed_consumption_w,
             raw_net_consumption_w=raw_net_w,
@@ -336,6 +347,50 @@ class PowerControllerCore:
         if not applied_limits:
             return None
         return min(applied_limits)
+
+    def _degraded_reasons(
+        self,
+        *,
+        requested_target_w: float,
+        battery_result: ActuatorResult,
+        inverter_result: ActuatorResult | None,
+        inverter_expected: bool,
+    ) -> tuple[str, ...]:
+        reasons: list[str] = []
+        if not battery_result.available:
+            reasons.append("battery_unavailable")
+        if inverter_expected and inverter_result is None:
+            reasons.append("inverter_unavailable")
+        elif inverter_result is not None and not inverter_result.available:
+            reasons.append("inverter_unavailable")
+
+        if (
+            battery_result.available
+            and battery_result.applied_limit_w is not None
+            and battery_result.applied_limit_w != battery_result.target_limit_w
+        ):
+            reasons.append("battery_not_enforcing_target")
+        if (
+            inverter_result is not None
+            and inverter_result.available
+            and inverter_result.applied_limit_w is not None
+            and inverter_result.applied_limit_w != inverter_result.target_limit_w
+        ):
+            reasons.append("inverter_not_enforcing_target")
+
+        if (
+            battery_result.available
+            and battery_result.allowed_max_output_w < requested_target_w
+        ):
+            reasons.append("battery_limited")
+        if (
+            inverter_result is not None
+            and inverter_result.available
+            and inverter_result.allowed_max_output_w < requested_target_w
+        ):
+            reasons.append("inverter_limited")
+
+        return tuple(dict.fromkeys(reasons))
 
     def _representative_current_limit(self, inputs: ControllerInputs) -> float:
         current_limits = [

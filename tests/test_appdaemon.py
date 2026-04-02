@@ -573,3 +573,89 @@ def test_time_weighted_metrics_are_published_and_listeners_registered() -> None:
     assert status_update[2]["tw_net_slow_q20_w"] == -20.0
     assert status_update[2]["battery_temperature_t5_c"] == 30.0
     assert status_update[2]["battery_temperature_t30_c"] == 30.0
+
+
+def test_status_reports_command_mismatch_after_grace(monkeypatch: Any) -> None:
+    now = {"value": 0.0}
+    monkeypatch.setattr(appdaemon_module.time, "monotonic", lambda: now["value"])
+    app = FakeHaPvOptimization(
+        args={
+            "consumption_entity": "sensor.load",
+            "battery_power_control_entity": "number.battery_limit",
+            "battery_power_step_w": 50,
+            "battery_min_change_w": 50,
+            "battery_min_write_interval_s": 0,
+            "battery_max_increase_per_cycle_w": 500,
+            "battery_max_decrease_per_cycle_w": 500,
+            "battery_emergency_max_decrease_per_cycle_w": 500,
+            "battery_max_output_w": 800,
+            "dry_run": False,
+        },
+        state_map={
+            "sensor.load": "200",
+            "number.battery_limit": {
+                "state": "0",
+                "attributes": {"min": 0, "max": 800, "step": 50},
+            },
+        },
+    )
+
+    app.initialize()
+    app._control_tick({})
+    now["value"] = 31.0
+    app.state_map["number.battery_limit"] = {
+        "state": "0",
+        "attributes": {"min": 0, "max": 800, "step": 50},
+    }
+    app._control_tick({})
+
+    status_update = _latest_status_update(app)
+    assert (
+        status_update[2]["battery_command_mismatch_reason"]
+        == "probable_rejected_command"
+    )
+    assert status_update[2]["battery_command_mismatch_w"] == -200.0
+    assert "battery_probable_rejected_command" in status_update[2]["degraded_reasons"]
+
+
+def test_status_reports_external_override_after_command_grace(monkeypatch: Any) -> None:
+    now = {"value": 0.0}
+    monkeypatch.setattr(appdaemon_module.time, "monotonic", lambda: now["value"])
+    app = FakeHaPvOptimization(
+        args={
+            "consumption_entity": "sensor.load",
+            "battery_power_control_entity": "number.battery_limit",
+            "battery_power_step_w": 50,
+            "battery_min_change_w": 50,
+            "battery_min_write_interval_s": 0,
+            "battery_max_increase_per_cycle_w": 500,
+            "battery_max_decrease_per_cycle_w": 500,
+            "battery_emergency_max_decrease_per_cycle_w": 500,
+            "battery_max_output_w": 800,
+            "dry_run": False,
+        },
+        state_map={
+            "sensor.load": "200",
+            "number.battery_limit": {
+                "state": "0",
+                "attributes": {"min": 0, "max": 800, "step": 50},
+            },
+        },
+    )
+
+    app.initialize()
+    app._control_tick({})
+    now["value"] = 31.0
+    app.state_map["number.battery_limit"] = {
+        "state": "300",
+        "attributes": {"min": 0, "max": 800, "step": 50},
+    }
+    app._control_tick({})
+
+    status_update = _latest_status_update(app)
+    assert (
+        status_update[2]["battery_command_mismatch_reason"]
+        == "probable_external_override"
+    )
+    assert status_update[2]["battery_command_mismatch_w"] == 100.0
+    assert "battery_probable_external_override" in status_update[2]["degraded_reasons"]

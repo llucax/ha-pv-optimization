@@ -114,6 +114,7 @@ _DEFAULT_AVAILABILITY_WARNING_GRACE_S = 15 * 60.0
 _DEFAULT_AVAILABILITY_IDLE_OUTPUT_THRESHOLD_W = 20.0
 _DEFAULT_AVAILABILITY_LOW_SUN_ELEVATION_DEG = 10.0
 _CONTROL_HEARTBEAT_INTERVAL_S = 5 * 60.0
+_COMMAND_MISMATCH_GRACE_S = 30.0
 _SIGNAL_HISTORY_WINDOW_S = 2 * 60 * 60.0
 _TW_FAST_WINDOW_S = 3.0
 _TW_SLOW_WINDOW_S = 20.0
@@ -189,6 +190,14 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             "inverter": None,
         }
         self.last_write_iso: dict[str, str | None] = {
+            "battery": None,
+            "inverter": None,
+        }
+        self.last_command_target_w: dict[str, float | None] = {
+            "battery": None,
+            "inverter": None,
+        }
+        self.last_command_observed_w: dict[str, float | None] = {
             "battery": None,
             "inverter": None,
         }
@@ -658,6 +667,8 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             entity_config=self.entities.primary_actuator,
             actual_power_w=primary_actual_power_w,
             last_write_monotonic=self.last_write_monotonic["battery"],
+            last_command_target_w=self.last_command_target_w["battery"],
+            last_command_observed_w=self.last_command_observed_w["battery"],
         )
         trim_inputs = self._read_trim_inputs(trim_actual_power_w)
         soc_pct = self._read_entity_float(self.entities.battery_soc_entity)
@@ -689,6 +700,11 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             discharge_limit_pct=discharge_limit_pct,
         )
         result = self.controller.step(inputs)
+        degraded_mode, degraded_reasons = self._effective_degraded_state(
+            result=result,
+            battery_inputs=primary_inputs,
+            inverter_inputs=trim_inputs,
+        )
 
         self._apply_actuator_result(
             entity_config=self.entities.primary_actuator,
@@ -702,9 +718,12 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
 
         if result.action in {"write", "dry_run"}:
             action_label = "Dry-run" if result.action == "dry_run" else "Updated"
-            summary = self._control_summary(result)
+            summary = self._control_summary(result, degraded_mode=degraded_mode)
             self.log(f"{action_label} control targets {summary}")
-        self.last_control_summary = self._control_summary(result)
+        self.last_control_summary = self._control_summary(
+            result,
+            degraded_mode=degraded_mode,
+        )
 
         self._emit_log(
             "Control cycle"
@@ -712,17 +731,28 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             f" consumption={result.effective_consumption_w:.1f}W"
             f" smoothed={result.smoothed_consumption_w:.1f}W"
             f" net={result.raw_net_consumption_w}"
-            f" {self._control_summary(result)}",
+            f" {self._control_summary(result, degraded_mode=degraded_mode)}",
             level=self.logging.control_cycle_log_level,
             log_name=self.logging.control_cycle_log,
         )
 
-        self._publish_result(result, inputs, self._time_weighted_metrics(now))
+        self._publish_result(
+            result,
+            inputs,
+            self._time_weighted_metrics(now),
+            degraded_mode=degraded_mode,
+            degraded_reasons=degraded_reasons,
+        )
 
     def _heartbeat_tick(self, kwargs: dict[str, Any]) -> None:
         self.log(f"Control heartbeat {self.last_control_summary}")
 
-    def _control_summary(self, result: ControllerResult) -> str:
+    def _control_summary(
+        self,
+        result: ControllerResult,
+        *,
+        degraded_mode: str,
+    ) -> str:
         effective_text = "unknown"
         if result.effective_target_w is not None:
             effective_text = f"{int(result.effective_target_w)}W"
@@ -733,16 +763,40 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             f" battery_allowed={int(result.battery_allowed_max_output_w)}W"
             f" inverter_allowed={int(result.inverter_allowed_max_output_w)}W"
             f" current={int(result.current_limit_w)}W"
+            f" degraded={degraded_mode}"
             f" battery={self._format_actuator_summary(result.primary_actuator)}"
             f" inverter={self._format_trim_summary(result.trim_actuator)}"
             f" reason={result.reason}"
         )
+
+    def _effective_degraded_state(
+        self,
+        *,
+        result: ControllerResult,
+        battery_inputs: ActuatorInputs | None,
+        inverter_inputs: ActuatorInputs | None,
+    ) -> tuple[str, tuple[str, ...]]:
+        reasons = list(result.degraded_reasons)
+        for prefix, inputs in (
+            ("battery", battery_inputs),
+            ("inverter", inverter_inputs),
+        ):
+            if inputs is None or inputs.command_mismatch_reason is None:
+                continue
+            reasons.append(f"{prefix}_{inputs.command_mismatch_reason}")
+
+        if not reasons:
+            return "nominal", ()
+        unique_reasons = tuple(dict.fromkeys(reasons))
+        return ",".join(unique_reasons), unique_reasons
 
     def _read_actuator_inputs(
         self,
         entity_config: ActuatorEntityConfig,
         actual_power_w: float | None,
         last_write_monotonic: float | None,
+        last_command_target_w: float | None,
+        last_command_observed_w: float | None,
     ) -> ActuatorInputs | None:
         current_limit_w = self._read_entity_float(entity_config.power_control_entity)
         if current_limit_w is None:
@@ -752,10 +806,31 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         if last_write_monotonic is not None:
             seconds_since_last_write = time.monotonic() - last_write_monotonic
 
+        command_mismatch_reason = None
+        command_mismatch_w = None
+        if (
+            last_command_target_w is not None
+            and seconds_since_last_write is not None
+            and seconds_since_last_write >= _COMMAND_MISMATCH_GRACE_S
+        ):
+            mismatch_w = current_limit_w - last_command_target_w
+            if abs(mismatch_w) >= 1.0:
+                command_mismatch_w = mismatch_w
+                if (
+                    last_command_observed_w is not None
+                    and abs(current_limit_w - last_command_observed_w) < 1.0
+                ):
+                    command_mismatch_reason = "probable_rejected_command"
+                else:
+                    command_mismatch_reason = "probable_external_override"
+
         return ActuatorInputs(
             current_limit_w=current_limit_w,
             actual_power_w=actual_power_w,
             seconds_since_last_write=seconds_since_last_write,
+            last_command_target_w=last_command_target_w,
+            command_mismatch_reason=command_mismatch_reason,
+            command_mismatch_w=command_mismatch_w,
         )
 
     def _read_trim_actual_power(self) -> float | None:
@@ -772,6 +847,8 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             entity_config=self.entities.trim_actuator,
             actual_power_w=trim_actual_power_w,
             last_write_monotonic=self.last_write_monotonic["inverter"],
+            last_command_target_w=self.last_command_target_w["inverter"],
+            last_command_observed_w=self.last_command_observed_w["inverter"],
         )
 
     def _apply_actuator_result(
@@ -793,8 +870,12 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         )
         now_monotonic = time.monotonic()
         now_iso = dt.datetime.now(dt.UTC).isoformat()
+        self.last_command_observed_w[entity_config.slot] = (
+            actuator_result.current_limit_w
+        )
         self.last_write_monotonic[entity_config.slot] = now_monotonic
         self.last_write_iso[entity_config.slot] = now_iso
+        self.last_command_target_w[entity_config.slot] = actuator_result.target_limit_w
 
     def _handle_missing_required_state(
         self,
@@ -1133,11 +1214,16 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         result: ControllerResult,
         inputs: ControllerInputs,
         tw_metrics: TimeWeightedMetrics,
+        *,
+        degraded_mode: str,
+        degraded_reasons: tuple[str, ...],
     ) -> None:
         state = "running"
         if self.config.dry_run:
             state = "dry_run"
 
+        battery_inputs = inputs.primary_actuator
+        inverter_inputs = inputs.trim_actuator
         trim_result = result.trim_actuator
         trim_entity = self.entities.trim_actuator
         total_actual_power_w = None
@@ -1218,6 +1304,8 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             ),
             "action": result.action,
             "reason": result.reason,
+            "degraded_mode": degraded_mode,
+            "degraded_reasons": list(degraded_reasons),
             "available_actuators": self._available_actuator_labels(
                 inputs.primary_actuator,
                 inputs.trim_actuator,
@@ -1265,6 +1353,12 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             "battery_action": result.primary_actuator.action,
             "primary_reason": result.primary_actuator.reason,
             "battery_reason": result.primary_actuator.reason,
+            "battery_command_mismatch_reason": None
+            if battery_inputs is None
+            else battery_inputs.command_mismatch_reason,
+            "battery_command_mismatch_w": None
+            if battery_inputs is None or battery_inputs.command_mismatch_w is None
+            else round(battery_inputs.command_mismatch_w, 1),
             "primary_translated_power_control_w": round(
                 result.primary_actuator.translated_limit_w, 1
             ),
@@ -1299,6 +1393,12 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             "inverter_action": None if trim_result is None else trim_result.action,
             "trim_reason": None if trim_result is None else trim_result.reason,
             "inverter_reason": None if trim_result is None else trim_result.reason,
+            "inverter_command_mismatch_reason": None
+            if inverter_inputs is None
+            else inverter_inputs.command_mismatch_reason,
+            "inverter_command_mismatch_w": None
+            if inverter_inputs is None or inverter_inputs.command_mismatch_w is None
+            else round(inverter_inputs.command_mismatch_w, 1),
             "trim_translated_power_control_w": None
             if trim_result is None
             else round(trim_result.translated_limit_w, 1),
