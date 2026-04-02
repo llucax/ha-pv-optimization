@@ -4,6 +4,11 @@ from pathlib import Path
 
 import pytest
 
+from ha_pv_optimization.config import (
+    controller_config_from_site_config,
+    load_site_config,
+)
+from ha_pv_optimization.device_models import DeviceFeedForwardEngine
 from ha_pv_optimization.replay import (
     GitReference,
     ReplayDataset,
@@ -73,14 +78,14 @@ def test_replay_runner_produces_deterministic_scorecard(tmp_path: Path) -> None:
     )
 
     assert run.scorecard.tick_count == 3
-    assert run.scorecard.total_write_count == 3
+    assert run.scorecard.total_write_count == 4
     assert run.scorecard.battery_write_count == 2
-    assert run.scorecard.inverter_write_count == 1
+    assert run.scorecard.inverter_write_count == 2
     assert run.scorecard.oversupply_energy_wh == 0.0
-    assert run.scorecard.undersupply_energy_wh == 0.4166666666666667
-    assert run.scorecard.self_consumption_ratio == 0.9166666666666667
-    assert run.scorecard.mean_absolute_error_w == 16.666666666666668
-    assert run.scorecard.measured_inverter_gap_w == 20.0
+    assert run.scorecard.undersupply_energy_wh == 2.166666666666667
+    assert run.scorecard.self_consumption_ratio == 0.5666666666666667
+    assert run.scorecard.mean_absolute_error_w == 86.66666666666667
+    assert run.scorecard.measured_inverter_gap_w == 76.66666666666667
 
 
 def test_load_history_csv_skips_invalid_rows_by_default(
@@ -151,3 +156,59 @@ def test_append_scorecard_history_creates_csv(tmp_path: Path) -> None:
     assert "controller_ref" in text
     assert "main" in text
     assert "battery_write_count" in text
+
+
+def test_replay_runner_uses_site_config_devices_for_feed_forward(
+    tmp_path: Path,
+) -> None:
+    site_config_path = _write_csv(
+        tmp_path / "site.yaml",
+        "consumption:\n"
+        "  entity: sensor.total_consumption_power\n"
+        "battery:\n"
+        "  power_control_entity: number.noah_limit\n"
+        "  max_output_w: 800\n"
+        "  power_step_w: 50\n"
+        "  min_change_w: 50\n"
+        "  min_write_interval_s: 0\n"
+        "devices:\n"
+        "  microwave:\n"
+        "    kind: burst_high_power\n"
+        "    entity_id: sensor.outlet_microwave_power\n"
+        "    high_threshold_w: 300\n"
+        "    enter_persistence_s: 0\n"
+        "    ff_gain: 1.0\n"
+        "    ff_hold_s: 90\n",
+    )
+    consumption_csv = _write_csv(
+        tmp_path / "consumption.csv",
+        "entity_id,state,last_changed\n"
+        "sensor.total_consumption_power,200,2026-03-28T06:00:00.000Z\n"
+        "sensor.total_consumption_power,200,2026-03-28T06:00:30.000Z\n"
+        "sensor.total_consumption_power,200,2026-03-28T06:01:00.000Z\n",
+    )
+    per_device_csv = _write_csv(
+        tmp_path / "per_device.csv",
+        "entity_id,state,last_changed\n"
+        "sensor.outlet_microwave_power,0,2026-03-28T06:00:00.000Z\n"
+        "sensor.outlet_microwave_power,1200,2026-03-28T06:00:01.000Z\n",
+    )
+
+    site_config = load_site_config(site_config_path)
+    dataset = ReplayDataset.from_csvs(
+        consumption_csv=consumption_csv,
+        per_device_csv=per_device_csv,
+    )
+    engine = DeviceFeedForwardEngine.from_configs(
+        {
+            name: device.to_runtime_config()
+            for name, device in site_config.devices.items()
+        }
+    )
+    run = ReplayRunner(
+        controller_config_from_site_config(site_config),
+        device_engine=engine,
+    ).run(dataset, ReplayScenario())
+
+    assert run.ticks[0].result.device_feed_forward_w == 0.0
+    assert run.ticks[1].result.device_feed_forward_w == 1200.0

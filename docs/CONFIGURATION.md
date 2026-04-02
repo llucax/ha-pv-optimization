@@ -76,14 +76,33 @@ Startup fails if a configured actuator cannot determine `max_output_w`, or if an
 ## Control behavior
 
 - `control_interval_s` - seconds between control cycles; default `30`.
-- `consumption_ema_tau_s` - smoothing time constant for `consumption_entity`; default `75`.
-- `net_ema_tau_s` - smoothing time constant for `net_consumption_entity` when configured; default `45`.
 - `baseline_load_w` - constant load offset added to the target calculation; default `0`.
-- `deadband_w` - residual error band where no corrective action is taken; default `50`.
 - `zero_output_threshold_w` - target values below this are snapped to `0`; default `25`.
-- `fast_export_threshold_w` - export threshold that triggers aggressive downward correction when `net_consumption_entity` is configured; default `-80`.
-- `import_correction_gain` - gain applied when correcting import when `net_consumption_entity` is configured; default `0.35`.
-- `export_correction_gain` - gain applied when correcting export when `net_consumption_entity` is configured; default `1.0`.
+
+The current aggregate controller is command-state based. It uses the time-weighted metrics published by the AppDaemon wrapper and the following tuning fields:
+
+- `command_step_w` - internal path-cap quantization step before actuator translation; default `10`.
+- `command_lockout_s` - seconds to suppress additional fast/slow trim after a fast event; default `12`.
+- `slow_up_deadband_w` - slow upward trim deadband; default `80`.
+- `slow_down_deadband_w` - slow downward trim deadband; default `-40`.
+- `minor_up_event_threshold_w` - aggregate step threshold for a smaller upward event; default `150`.
+- `major_up_event_threshold_w` - aggregate step threshold for a larger upward event; default `400`.
+- `down_event_threshold_w` - aggregate step threshold for a downward event; default `-150`.
+- `minor_up_persistence_s` - persistence requirement for a minor upward event; default `3`.
+- `major_up_persistence_s` - persistence requirement for a major upward event; default `2`.
+- `down_event_persistence_s` - persistence requirement for a downward event; default `3`.
+- `minor_up_multiplier` - multiplier applied to a minor upward event delta; default `0.75`.
+- `major_up_multiplier` - multiplier applied to a major upward event delta; default `0.90`.
+- `down_event_multiplier` - multiplier applied to a downward event delta; default `0.90`.
+- `slow_up_gain` - gain for slow upward trim; default `0.50`.
+- `slow_up_max_step_w` - maximum upward trim per cycle; default `100`.
+- `slow_down_guard_w` - extra downward trim guard added to the fast error magnitude; default `20`.
+- `slow_down_max_step_w` - maximum downward trim per cycle; default `300`.
+- `visible_oversupply_one_sample_w` - immediate severe oversupply threshold based on visible load minus inverter output; default `-120`.
+- `visible_oversupply_two_sample_w` - moderate oversupply threshold that must persist twice; default `-60`.
+- `visible_oversupply_max_cut_w` - maximum cut used by the oversupply safeguard; default `500`.
+
+Legacy EMA/net-correction knobs remain in the config surface for compatibility with older configs and the preview metrics, but the current Stage 8 aggregate loop primarily relies on the command-state/event-path fields above plus the time-weighted metrics from the wrapper.
 
 ## Logging
 
@@ -128,6 +147,38 @@ These thermal state outputs now drive:
 - the battery-side cap ceiling used by the controller
 - the desired `number.growatt_noah_2000_discharge_limit` target
 - the desired `number.growatt_noah_2000_charging_limit` target
+
+## Device feed-forward
+
+Per-device feed-forward is configured through the typed `devices:` section in `site.yaml`, not through flat AppDaemon args.
+
+Each device entry supports:
+
+- `kind` - one of:
+  - `burst_high_power`
+  - `cyclic_heater`
+  - `composite_kitchen_outlet`
+- `entity_id` - Home Assistant power entity for that device or outlet
+- `enabled` - whether the device model is active
+- `low_threshold_w` - optional low threshold used by `cyclic_heater`
+- `high_threshold_w` - threshold for the high-power state
+- `enter_persistence_s` - seconds required before entering the active state
+- `exit_persistence_s` - seconds required before leaving the active state
+- `ff_gain` - multiplier applied to the observed device power when the transition bias activates
+- `ff_hold_s` - how long the temporary feed-forward bias stays active after a high-power transition
+
+For this site, the current feed-forward device set enables:
+
+- microwave
+- under-cabinet appliances (composite outlet)
+- oven
+- dishwasher
+
+The controller publishes these device-feed-forward diagnostics in the status entity:
+
+- `device_feed_forward_w`
+- `active_device_feed_forward`
+- `device_contributions`
 
 ## Battery protection
 

@@ -6,6 +6,7 @@ from typing import Any
 
 import yaml
 
+from .device_models import DeviceModelConfig, DeviceModelKind
 from .models import ActuatorConfig, ControllerConfig, ThermalPolicyConfig
 
 
@@ -163,6 +164,26 @@ class ControlSiteConfig:
     import_correction_gain: float = 0.35
     export_correction_gain: float = 1.0
     net_export_negative: bool = True
+    command_step_w: float = 10.0
+    command_lockout_s: float = 12.0
+    slow_up_deadband_w: float = 80.0
+    slow_down_deadband_w: float = -40.0
+    minor_up_event_threshold_w: float = 150.0
+    major_up_event_threshold_w: float = 400.0
+    down_event_threshold_w: float = -150.0
+    minor_up_persistence_s: float = 3.0
+    major_up_persistence_s: float = 2.0
+    down_event_persistence_s: float = 3.0
+    minor_up_multiplier: float = 0.75
+    major_up_multiplier: float = 0.90
+    down_event_multiplier: float = 0.90
+    slow_up_gain: float = 0.50
+    slow_up_max_step_w: float = 100.0
+    slow_down_guard_w: float = 20.0
+    slow_down_max_step_w: float = 300.0
+    visible_oversupply_one_sample_w: float = -120.0
+    visible_oversupply_two_sample_w: float = -60.0
+    visible_oversupply_max_cut_w: float = 500.0
 
     @classmethod
     def from_mapping(cls, mapping: dict[str, Any] | None) -> ControlSiteConfig:
@@ -201,6 +222,86 @@ class ControlSiteConfig:
                 1.0,
             ),
             net_export_negative=_with_default(net_export_negative, True),
+            command_step_w=_with_default(
+                _optional_float(mapping, "command_step_w"),
+                10.0,
+            ),
+            command_lockout_s=_with_default(
+                _optional_float(mapping, "command_lockout_s"),
+                12.0,
+            ),
+            slow_up_deadband_w=_with_default(
+                _optional_float(mapping, "slow_up_deadband_w"),
+                80.0,
+            ),
+            slow_down_deadband_w=_with_default(
+                _optional_float(mapping, "slow_down_deadband_w"),
+                -40.0,
+            ),
+            minor_up_event_threshold_w=_with_default(
+                _optional_float(mapping, "minor_up_event_threshold_w"),
+                150.0,
+            ),
+            major_up_event_threshold_w=_with_default(
+                _optional_float(mapping, "major_up_event_threshold_w"),
+                400.0,
+            ),
+            down_event_threshold_w=_with_default(
+                _optional_float(mapping, "down_event_threshold_w"),
+                -150.0,
+            ),
+            minor_up_persistence_s=_with_default(
+                _optional_float(mapping, "minor_up_persistence_s"),
+                3.0,
+            ),
+            major_up_persistence_s=_with_default(
+                _optional_float(mapping, "major_up_persistence_s"),
+                2.0,
+            ),
+            down_event_persistence_s=_with_default(
+                _optional_float(mapping, "down_event_persistence_s"),
+                3.0,
+            ),
+            minor_up_multiplier=_with_default(
+                _optional_float(mapping, "minor_up_multiplier"),
+                0.75,
+            ),
+            major_up_multiplier=_with_default(
+                _optional_float(mapping, "major_up_multiplier"),
+                0.90,
+            ),
+            down_event_multiplier=_with_default(
+                _optional_float(mapping, "down_event_multiplier"),
+                0.90,
+            ),
+            slow_up_gain=_with_default(
+                _optional_float(mapping, "slow_up_gain"),
+                0.50,
+            ),
+            slow_up_max_step_w=_with_default(
+                _optional_float(mapping, "slow_up_max_step_w"),
+                100.0,
+            ),
+            slow_down_guard_w=_with_default(
+                _optional_float(mapping, "slow_down_guard_w"),
+                20.0,
+            ),
+            slow_down_max_step_w=_with_default(
+                _optional_float(mapping, "slow_down_max_step_w"),
+                300.0,
+            ),
+            visible_oversupply_one_sample_w=_with_default(
+                _optional_float(mapping, "visible_oversupply_one_sample_w"),
+                -120.0,
+            ),
+            visible_oversupply_two_sample_w=_with_default(
+                _optional_float(mapping, "visible_oversupply_two_sample_w"),
+                -60.0,
+            ),
+            visible_oversupply_max_cut_w=_with_default(
+                _optional_float(mapping, "visible_oversupply_max_cut_w"),
+                500.0,
+            ),
         )
 
 
@@ -265,6 +366,68 @@ class LoggingSiteConfig:
             or "sensor.ha_pv_optimization",
             control_cycle_log=_optional_str(mapping, "control_cycle_log"),
             control_cycle_log_level=_optional_str(mapping, "control_cycle_log_level"),
+        )
+
+
+@dataclass(frozen=True)
+class DeviceModelSiteConfig:
+    name: str
+    kind: DeviceModelKind
+    entity_id: str
+    enabled: bool = True
+    low_threshold_w: float | None = None
+    high_threshold_w: float = 300.0
+    enter_persistence_s: float = 2.0
+    exit_persistence_s: float = 2.0
+    ff_gain: float = 0.9
+    ff_hold_s: float = 60.0
+
+    @classmethod
+    def from_mapping(
+        cls,
+        name: str,
+        mapping: dict[str, Any],
+    ) -> DeviceModelSiteConfig:
+        kind_text = _required_str(mapping, "kind", context=f"devices.{name}")
+        try:
+            kind = DeviceModelKind(kind_text)
+        except ValueError as exc:
+            raise ValueError(f"Invalid devices.{name}.kind: {kind_text}") from exc
+        enabled = _optional_bool(mapping, "enabled")
+        return cls(
+            name=name,
+            kind=kind,
+            entity_id=_required_str(mapping, "entity_id", context=f"devices.{name}"),
+            enabled=True if enabled is None else enabled,
+            low_threshold_w=_optional_float(mapping, "low_threshold_w"),
+            high_threshold_w=_with_default(
+                _optional_float(mapping, "high_threshold_w"),
+                300.0,
+            ),
+            enter_persistence_s=_with_default(
+                _optional_float(mapping, "enter_persistence_s"),
+                2.0,
+            ),
+            exit_persistence_s=_with_default(
+                _optional_float(mapping, "exit_persistence_s"),
+                2.0,
+            ),
+            ff_gain=_with_default(_optional_float(mapping, "ff_gain"), 0.9),
+            ff_hold_s=_with_default(_optional_float(mapping, "ff_hold_s"), 60.0),
+        )
+
+    def to_runtime_config(self) -> DeviceModelConfig:
+        return DeviceModelConfig(
+            name=self.name,
+            kind=self.kind,
+            entity_id=self.entity_id,
+            enabled=self.enabled,
+            low_threshold_w=self.low_threshold_w,
+            high_threshold_w=self.high_threshold_w,
+            enter_persistence_s=self.enter_persistence_s,
+            exit_persistence_s=self.exit_persistence_s,
+            ff_gain=self.ff_gain,
+            ff_hold_s=self.ff_hold_s,
         )
 
 
@@ -362,7 +525,7 @@ class SiteConfig:
     thermal: ThermalSiteConfig = field(default_factory=ThermalSiteConfig)
     availability: AvailabilitySiteConfig = field(default_factory=AvailabilitySiteConfig)
     logging: LoggingSiteConfig = field(default_factory=LoggingSiteConfig)
-    devices: dict[str, Any] = field(default_factory=dict)
+    devices: dict[str, DeviceModelSiteConfig] = field(default_factory=dict)
 
     @classmethod
     def from_mapping(cls, mapping: dict[str, Any]) -> SiteConfig:
@@ -400,7 +563,13 @@ class SiteConfig:
             logging=LoggingSiteConfig.from_mapping(
                 _optional_mapping(mapping.get("logging"), context="logging")
             ),
-            devices=_mapping(mapping.get("devices", {}), context="devices"),
+            devices={
+                name: DeviceModelSiteConfig.from_mapping(name, device_mapping)
+                for name, device_mapping in _mapping(
+                    mapping.get("devices", {}),
+                    context="devices",
+                ).items()
+            },
         )
 
 
@@ -463,6 +632,32 @@ def site_config_to_appdaemon_args(site_config: SiteConfig) -> dict[str, Any]:
         "import_correction_gain": site_config.control.import_correction_gain,
         "export_correction_gain": site_config.control.export_correction_gain,
         "net_export_negative": site_config.control.net_export_negative,
+        "command_step_w": site_config.control.command_step_w,
+        "command_lockout_s": site_config.control.command_lockout_s,
+        "slow_up_deadband_w": site_config.control.slow_up_deadband_w,
+        "slow_down_deadband_w": site_config.control.slow_down_deadband_w,
+        "minor_up_event_threshold_w": site_config.control.minor_up_event_threshold_w,
+        "major_up_event_threshold_w": site_config.control.major_up_event_threshold_w,
+        "down_event_threshold_w": site_config.control.down_event_threshold_w,
+        "minor_up_persistence_s": site_config.control.minor_up_persistence_s,
+        "major_up_persistence_s": site_config.control.major_up_persistence_s,
+        "down_event_persistence_s": site_config.control.down_event_persistence_s,
+        "minor_up_multiplier": site_config.control.minor_up_multiplier,
+        "major_up_multiplier": site_config.control.major_up_multiplier,
+        "down_event_multiplier": site_config.control.down_event_multiplier,
+        "slow_up_gain": site_config.control.slow_up_gain,
+        "slow_up_max_step_w": site_config.control.slow_up_max_step_w,
+        "slow_down_guard_w": site_config.control.slow_down_guard_w,
+        "slow_down_max_step_w": site_config.control.slow_down_max_step_w,
+        "visible_oversupply_one_sample_w": (
+            site_config.control.visible_oversupply_one_sample_w
+        ),
+        "visible_oversupply_two_sample_w": (
+            site_config.control.visible_oversupply_two_sample_w
+        ),
+        "visible_oversupply_max_cut_w": (
+            site_config.control.visible_oversupply_max_cut_w
+        ),
         "soc_stop_buffer_pct": site_config.battery_policy.soc_stop_buffer_pct,
         "soc_full_power_buffer_pct": (
             site_config.battery_policy.soc_full_power_buffer_pct
@@ -611,6 +806,26 @@ def controller_config_from_site_config(
         soc_min_derate_factor=site_config.battery_policy.soc_min_derate_factor,
         net_export_negative=site_config.control.net_export_negative,
         dry_run=dry_run,
+        command_step_w=site_config.control.command_step_w,
+        command_lockout_s=site_config.control.command_lockout_s,
+        slow_up_deadband_w=site_config.control.slow_up_deadband_w,
+        slow_down_deadband_w=site_config.control.slow_down_deadband_w,
+        minor_up_event_threshold_w=site_config.control.minor_up_event_threshold_w,
+        major_up_event_threshold_w=site_config.control.major_up_event_threshold_w,
+        down_event_threshold_w=site_config.control.down_event_threshold_w,
+        minor_up_persistence_s=site_config.control.minor_up_persistence_s,
+        major_up_persistence_s=site_config.control.major_up_persistence_s,
+        down_event_persistence_s=site_config.control.down_event_persistence_s,
+        minor_up_multiplier=site_config.control.minor_up_multiplier,
+        major_up_multiplier=site_config.control.major_up_multiplier,
+        down_event_multiplier=site_config.control.down_event_multiplier,
+        slow_up_gain=site_config.control.slow_up_gain,
+        slow_up_max_step_w=site_config.control.slow_up_max_step_w,
+        slow_down_guard_w=site_config.control.slow_down_guard_w,
+        slow_down_max_step_w=site_config.control.slow_down_max_step_w,
+        visible_oversupply_one_sample_w=site_config.control.visible_oversupply_one_sample_w,
+        visible_oversupply_two_sample_w=site_config.control.visible_oversupply_two_sample_w,
+        visible_oversupply_max_cut_w=site_config.control.visible_oversupply_max_cut_w,
         thermal_policy=ThermalPolicyConfig(
             normal_min_soc_pct=site_config.thermal.normal_min_soc_pct,
             normal_max_soc_pct=site_config.thermal.normal_max_soc_pct,

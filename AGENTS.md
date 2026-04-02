@@ -14,12 +14,14 @@ This file is for coding agents working in this repo.
 - `src/ha_pv_optimization/models.py` - typed controller config, inputs, and results.
 - `src/ha_pv_optimization/config.py` - typed site config models, loader, and conversion helpers.
 - `src/ha_pv_optimization/signals.py` - pure signal math, time-weighted series, and reusable helpers.
+- `src/ha_pv_optimization/device_models.py` - reusable per-device feed-forward models and runtime state.
 - `src/ha_pv_optimization/controller.py` - pure controller orchestration and decision logic.
 - `src/ha_pv_optimization/core.py` - compatibility re-export layer for the controller API.
 - `src/ha_pv_optimization/appdaemon.py` - AppDaemon wrapper; keep it thin.
 - `src/ha_pv_optimization/replay.py` - CSV trace loading, replay execution, and baseline scorecards.
 - `tests/` - unit tests for the core logic.
 - `tests/test_signals.py` - focused tests for time-weighted signal handling.
+- `tests/test_device_models.py` - focused tests for per-device feed-forward model transitions and contributions.
 - `docs/` - assumptions, configuration, and install guidance.
 - `examples/` - opinionated AppDaemon and systemd examples for the NOAH 2000 plus EZ1-M style deployment.
 
@@ -73,6 +75,7 @@ uv run pytest
 - For changes in `src/ha_pv_optimization/controller.py`, `src/ha_pv_optimization/models.py`, or `src/ha_pv_optimization/signals.py`, run at least the focused core test file plus lint.
 - For changes in `src/ha_pv_optimization/config.py`, run config-related tests plus the full suite.
 - For changes in `src/ha_pv_optimization/signals.py`, also run `tests/test_signals.py` and any replay tests affected by the window semantics.
+- For changes in `src/ha_pv_optimization/device_models.py`, run `tests/test_device_models.py` and replay if the configured device set changes.
 - For changes in `src/ha_pv_optimization/replay.py`, run replay tests plus the full suite.
 - For behavior changes, add or update tests in `tests/test_core.py`.
 - For wrapper/config/docs changes, run lint and the full test suite unless the change is purely documentation.
@@ -132,6 +135,7 @@ uv run pytest
 - If you add a new control input or config key, thread it through config docs, assumptions, examples, and tests.
 - Treat the topology as `PV -DC-> battery -DC-> inverter -AC-> house`, with battery and inverter acting as two gates on the same output path rather than additive outputs.
 - When editing Stage 6 thermal behavior, keep the thermal state machine and rail targets aligned with the site-config thermal section and the NOAH charging/discharge-limit entities.
+- When editing Stage 7 feed-forward behavior, keep the typed `devices:` section, `device_models.py`, replay runner, and status/debug output aligned so the live controller and replay baseline exercise the same device set.
 
 ## Testing guidance
 - Prefer deterministic unit tests with explicit numeric expectations.

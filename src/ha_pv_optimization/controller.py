@@ -10,77 +10,44 @@ from .models import (
     ThermalPolicyConfig,
     ThermalState,
 )
-from .signals import clamp, ema, quantize_down, tau_to_alpha
+from .signals import clamp, quantize_down
 
 
 class PowerControllerCore:
     def __init__(self, config: ControllerConfig) -> None:
         self.config = config
+        self.cap_cmd_w: float | None = None
+        self.lockout_remaining_s = 0.0
+        self.minor_up_elapsed_s = 0.0
+        self.major_up_elapsed_s = 0.0
+        self.down_elapsed_s = 0.0
+        self.moderate_oversupply_streak = 0
         self.smoothed_consumption_w: float | None = None
         self.smoothed_net_consumption_w: float | None = None
         self.thermal_state = ThermalState.NORMAL
         self.thermal_clear_elapsed_s = 0.0
 
     def step(self, inputs: ControllerInputs) -> ControllerResult:
-        effective_consumption_w = max(
-            0.0, inputs.consumption_w + self.config.baseline_load_w
+        visible_load_w = max(0.0, inputs.consumption_w + self.config.baseline_load_w)
+        device_feed_forward_w = max(0.0, inputs.device_feed_forward_w)
+        estimated_load_fast_w = self._with_baseline(
+            inputs.tw_consumption_fast_mean_w,
+            fallback=visible_load_w,
+            include_feed_forward_w=device_feed_forward_w,
+        )
+        estimated_load_slow_w = self._with_baseline(
+            inputs.tw_consumption_slow_q20_w,
+            fallback=visible_load_w,
+            include_feed_forward_w=device_feed_forward_w,
+        )
+        visible_load_pre_event_median_w = self._with_baseline(
+            inputs.tw_consumption_pre_event_median_w,
+            fallback=visible_load_w,
+            include_feed_forward_w=0.0,
         )
 
-        consumption_alpha = tau_to_alpha(
-            self.config.control_interval_s,
-            self.config.consumption_ema_tau_s,
-        )
-        self.smoothed_consumption_w = ema(
-            self.smoothed_consumption_w,
-            effective_consumption_w,
-            consumption_alpha,
-        )
-
-        raw_net_w = inputs.net_consumption_w
-        if raw_net_w is not None:
-            if not self.config.net_export_negative:
-                raw_net_w = -raw_net_w
-            net_alpha = tau_to_alpha(
-                self.config.control_interval_s,
-                self.config.net_ema_tau_s,
-            )
-            self.smoothed_net_consumption_w = ema(
-                self.smoothed_net_consumption_w,
-                raw_net_w,
-                net_alpha,
-            )
-
-        requested_target_w = self.smoothed_consumption_w
-        net_correction_w = 0.0
-        export_fast = False
-        reason_parts: list[str] = []
-
-        if raw_net_w is not None:
-            if raw_net_w <= self.config.fast_export_threshold_w:
-                net_correction_w = raw_net_w
-                export_fast = True
-                reason_parts.append("fast_export")
-            else:
-                net_signal_w = self.smoothed_net_consumption_w
-                if (
-                    net_signal_w is not None
-                    and abs(net_signal_w) >= self.config.deadband_w
-                ):
-                    gain = (
-                        self.config.export_correction_gain
-                        if net_signal_w < 0
-                        else self.config.import_correction_gain
-                    )
-                    net_correction_w = gain * net_signal_w
-                    reason_parts.append("net_correction")
-
-        requested_target_w += net_correction_w
-
-        if effective_consumption_w <= self.config.zero_output_threshold_w and (
-            raw_net_w is None or abs(raw_net_w) <= self.config.deadband_w
-        ):
-            requested_target_w = 0.0
-            reason_parts.append("low_demand_zero")
+        self.smoothed_consumption_w = estimated_load_fast_w
+        self.smoothed_net_consumption_w = inputs.tw_net_fast_mean_w
 
         thermal_state = self._update_thermal_state(inputs)
         desired_min_soc_pct, desired_max_soc_pct, battery_cap_limit_w = (
@@ -98,25 +65,83 @@ class PowerControllerCore:
             battery_allowed_max_output_w=battery_allowed_max_output_w,
             inverter_allowed_max_output_w=inverter_allowed_max_output_w,
         )
-        desired_target_w = clamp(requested_target_w, 0.0, allowed_path_cap_w)
+
+        observed_path_cap_w = self._observed_path_cap_w(inputs)
+        if self.cap_cmd_w is None:
+            self.cap_cmd_w = observed_path_cap_w
+
+        self.lockout_remaining_s = max(
+            0.0,
+            self.lockout_remaining_s - self.config.control_interval_s,
+        )
+
+        delta_load_w = visible_load_w - visible_load_pre_event_median_w
+        self._update_event_persistence(delta_load_w)
+
+        requested_target_w = self.cap_cmd_w
+        fast_error_w = estimated_load_fast_w - self.cap_cmd_w
+        slow_error_w = estimated_load_slow_w - self.cap_cmd_w
+        visible_margin_w = self._visible_margin_w(inputs, visible_load_w)
+
+        reason_parts: list[str] = []
+        if device_feed_forward_w > 0:
+            reason_parts.append("device_feed_forward")
+
+        requested_target_w, event_reason = self._fast_event_target(
+            requested_target_w=requested_target_w,
+            delta_load_w=delta_load_w,
+        )
+        if event_reason is not None:
+            reason_parts.append(event_reason)
+            self.lockout_remaining_s = self.config.command_lockout_s
+            self._reset_event_persistence()
+        elif self.lockout_remaining_s <= 0.0:
+            requested_target_w, trim_reason = self._slow_trim_target(
+                requested_target_w=requested_target_w,
+                fast_error_w=fast_error_w,
+                slow_error_w=slow_error_w,
+            )
+            if trim_reason is not None:
+                reason_parts.append(trim_reason)
+
+        requested_target_w, oversupply_reason = self._oversupply_target(
+            requested_target_w=requested_target_w,
+            visible_margin_w=visible_margin_w,
+        )
+        if oversupply_reason is not None:
+            reason_parts.append(oversupply_reason)
+
+        requested_target_w = clamp(
+            quantize_down(requested_target_w, self.config.command_step_w),
+            0.0,
+            max(0.0, max(allowed_path_cap_w, observed_path_cap_w, self.cap_cmd_w)),
+        )
+        self.cap_cmd_w = requested_target_w
+
+        if visible_load_w <= self.config.zero_output_threshold_w:
+            requested_target_w = 0.0
+            self.cap_cmd_w = 0.0
+            reason_parts.append("low_demand_zero")
+
+        desired_path_cap_w = clamp(requested_target_w, 0.0, allowed_path_cap_w)
 
         battery_result = self._build_actuator_result(
             config=self.config.battery_actuator,
             inputs=inputs.battery_actuator,
-            desired_target_w=desired_target_w,
+            desired_target_w=desired_path_cap_w,
             allowed_max_output_w=battery_allowed_max_output_w,
             other_actuator_available=inputs.inverter_actuator is not None,
-            export_fast=export_fast,
+            export_fast=False,
         )
         inverter_result = None
         if self.config.inverter_actuator is not None:
             inverter_result = self._build_actuator_result(
                 config=self.config.inverter_actuator,
                 inputs=inputs.inverter_actuator,
-                desired_target_w=desired_target_w,
+                desired_target_w=desired_path_cap_w,
                 allowed_max_output_w=inverter_allowed_max_output_w,
                 other_actuator_available=inputs.battery_actuator is not None,
-                export_fast=export_fast,
+                export_fast=False,
             )
 
         action = self._combined_action(battery_result, inverter_result)
@@ -126,7 +151,6 @@ class PowerControllerCore:
         if not reason_parts:
             reason_parts.append("steady")
 
-        representative_current_w = self._representative_current_limit(inputs)
         effective_target_w = self._effective_path_limit_w(
             battery_result, inverter_result
         )
@@ -142,9 +166,10 @@ class PowerControllerCore:
 
         return ControllerResult(
             action=action,
-            target_limit_w=desired_target_w,
+            target_limit_w=desired_path_cap_w,
             requested_target_w=requested_target_w,
-            desired_target_w=desired_target_w,
+            desired_path_cap_w=desired_path_cap_w,
+            cap_cmd_w=self.cap_cmd_w,
             effective_target_w=effective_target_w,
             degraded_mode=degraded_mode,
             degraded_reasons=degraded_reasons,
@@ -152,20 +177,150 @@ class PowerControllerCore:
             desired_min_soc_pct=desired_min_soc_pct,
             desired_max_soc_pct=desired_max_soc_pct,
             battery_cap_limit_w=battery_cap_limit_w,
-            effective_consumption_w=effective_consumption_w,
-            smoothed_consumption_w=self.smoothed_consumption_w,
-            raw_net_consumption_w=raw_net_w,
-            smoothed_net_consumption_w=self.smoothed_net_consumption_w,
-            net_correction_w=net_correction_w,
+            device_feed_forward_w=device_feed_forward_w,
+            estimated_load_fast_w=estimated_load_fast_w,
+            estimated_load_slow_w=estimated_load_slow_w,
+            visible_load_pre_event_median_w=visible_load_pre_event_median_w,
+            fast_error_w=fast_error_w,
+            slow_error_w=slow_error_w,
+            visible_margin_w=visible_margin_w,
+            effective_consumption_w=visible_load_w,
+            smoothed_consumption_w=estimated_load_fast_w,
+            raw_net_consumption_w=inputs.net_consumption_w,
+            smoothed_net_consumption_w=inputs.tw_net_fast_mean_w,
+            net_correction_w=0.0,
             allowed_max_output_w=allowed_path_cap_w,
             primary_allowed_max_output_w=battery_allowed_max_output_w,
             trim_allowed_max_output_w=inverter_allowed_max_output_w,
-            export_fast=export_fast,
+            export_fast=False,
             reason=",".join(reason_parts),
-            current_limit_w=representative_current_w,
+            current_limit_w=observed_path_cap_w,
             primary_actuator=battery_result,
             trim_actuator=inverter_result,
         )
+
+    def _with_baseline(
+        self,
+        value: float | None,
+        *,
+        fallback: float,
+        include_feed_forward_w: float,
+    ) -> float:
+        if value is None:
+            return fallback + include_feed_forward_w
+        return max(0.0, value + self.config.baseline_load_w + include_feed_forward_w)
+
+    def _observed_path_cap_w(self, inputs: ControllerInputs) -> float:
+        current_limits = [
+            actuator.current_limit_w
+            for actuator in (inputs.battery_actuator, inputs.inverter_actuator)
+            if actuator is not None
+        ]
+        if not current_limits:
+            return 0.0
+        return min(current_limits)
+
+    def _update_event_persistence(self, delta_load_w: float) -> None:
+        interval_s = self.config.control_interval_s
+        if delta_load_w >= self.config.minor_up_event_threshold_w:
+            self.minor_up_elapsed_s += interval_s
+        else:
+            self.minor_up_elapsed_s = 0.0
+
+        if delta_load_w >= self.config.major_up_event_threshold_w:
+            self.major_up_elapsed_s += interval_s
+        else:
+            self.major_up_elapsed_s = 0.0
+
+        if delta_load_w <= self.config.down_event_threshold_w:
+            self.down_elapsed_s += interval_s
+        else:
+            self.down_elapsed_s = 0.0
+
+    def _reset_event_persistence(self) -> None:
+        self.minor_up_elapsed_s = 0.0
+        self.major_up_elapsed_s = 0.0
+        self.down_elapsed_s = 0.0
+
+    def _fast_event_target(
+        self,
+        *,
+        requested_target_w: float,
+        delta_load_w: float,
+    ) -> tuple[float, str | None]:
+        if self.major_up_elapsed_s >= self.config.major_up_persistence_s:
+            jump_w = self.config.major_up_multiplier * delta_load_w
+            return requested_target_w + jump_w, "major_up_event"
+        if self.minor_up_elapsed_s >= self.config.minor_up_persistence_s:
+            jump_w = self.config.minor_up_multiplier * delta_load_w
+            return requested_target_w + jump_w, "minor_up_event"
+        if self.down_elapsed_s >= self.config.down_event_persistence_s:
+            drop_w = self.config.down_event_multiplier * abs(delta_load_w)
+            return max(0.0, requested_target_w - drop_w), "down_event"
+        return requested_target_w, None
+
+    def _slow_trim_target(
+        self,
+        *,
+        requested_target_w: float,
+        fast_error_w: float,
+        slow_error_w: float,
+    ) -> tuple[float, str | None]:
+        if slow_error_w > self.config.slow_up_deadband_w:
+            delta_up_w = clamp(
+                self.config.slow_up_gain * slow_error_w,
+                self.config.command_step_w,
+                self.config.slow_up_max_step_w,
+            )
+            return requested_target_w + delta_up_w, "slow_up_trim"
+        if fast_error_w < self.config.slow_down_deadband_w:
+            delta_down_w = clamp(
+                abs(fast_error_w) + self.config.slow_down_guard_w,
+                self.config.command_step_w,
+                self.config.slow_down_max_step_w,
+            )
+            return max(0.0, requested_target_w - delta_down_w), "slow_down_trim"
+        return requested_target_w, None
+
+    def _visible_margin_w(
+        self,
+        inputs: ControllerInputs,
+        visible_load_w: float,
+    ) -> float | None:
+        inverter_actual_power_w = None
+        if inputs.inverter_actuator is not None:
+            inverter_actual_power_w = inputs.inverter_actuator.actual_power_w
+        if inverter_actual_power_w is None:
+            return None
+        return visible_load_w - inverter_actual_power_w
+
+    def _oversupply_target(
+        self,
+        *,
+        requested_target_w: float,
+        visible_margin_w: float | None,
+    ) -> tuple[float, str | None]:
+        if visible_margin_w is None:
+            self.moderate_oversupply_streak = 0
+            return requested_target_w, None
+
+        if visible_margin_w < self.config.visible_oversupply_two_sample_w:
+            self.moderate_oversupply_streak += 1
+        else:
+            self.moderate_oversupply_streak = 0
+
+        if visible_margin_w < self.config.visible_oversupply_one_sample_w:
+            cut_w = min(
+                max(0.0, abs(visible_margin_w) - 60.0),
+                self.config.visible_oversupply_max_cut_w,
+            )
+            return max(0.0, requested_target_w - cut_w), "oversupply_severe"
+
+        if self.moderate_oversupply_streak >= 2:
+            cut_w = min(abs(visible_margin_w), 300.0)
+            return max(0.0, requested_target_w - cut_w), "oversupply_moderate"
+
+        return requested_target_w, None
 
     def _allowed_path_cap_w(
         self,
@@ -206,7 +361,6 @@ class PowerControllerCore:
         )
         if inputs.soc_pct is None:
             return allowed_max_output_w
-
         if inputs.soc_pct <= desired_min_soc_pct:
             return 0.0
         return allowed_max_output_w
@@ -345,6 +499,35 @@ class PowerControllerCore:
             offset=config.min_output_w,
         )
         return clamp(target_limit_w, lower_bound_w, upper_bound_w)
+
+    def _representative_current_limit(self, inputs: ControllerInputs) -> float:
+        return self._observed_path_cap_w(inputs)
+
+    def _combined_action(
+        self,
+        battery_result: ActuatorResult,
+        inverter_result: ActuatorResult | None,
+    ) -> str:
+        results = [battery_result]
+        if inverter_result is not None:
+            results.append(inverter_result)
+
+        if any(result.action == "write" for result in results):
+            return "write"
+        if any(result.action == "dry_run" for result in results):
+            return "dry_run"
+        return "skip"
+
+    def _actuator_reason_parts(
+        self,
+        battery_result: ActuatorResult,
+        inverter_result: ActuatorResult | None,
+    ) -> list[str]:
+        parts: list[str] = []
+        parts.append(f"battery_{battery_result.reason}")
+        if inverter_result is not None:
+            parts.append(f"inverter_{inverter_result.reason}")
+        return parts
 
     def _effective_path_limit_w(
         self,
@@ -516,39 +699,3 @@ class PowerControllerCore:
             policy.normal_max_soc_pct,
             policy.normal_cap_limit_w,
         )
-
-    def _representative_current_limit(self, inputs: ControllerInputs) -> float:
-        current_limits = [
-            actuator.current_limit_w
-            for actuator in (inputs.battery_actuator, inputs.inverter_actuator)
-            if actuator is not None
-        ]
-        if current_limits:
-            return min(current_limits)
-        return 0.0
-
-    def _combined_action(
-        self,
-        battery_result: ActuatorResult,
-        inverter_result: ActuatorResult | None,
-    ) -> str:
-        results = [battery_result]
-        if inverter_result is not None:
-            results.append(inverter_result)
-
-        if any(result.action == "write" for result in results):
-            return "write"
-        if any(result.action == "dry_run" for result in results):
-            return "dry_run"
-        return "skip"
-
-    def _actuator_reason_parts(
-        self,
-        battery_result: ActuatorResult,
-        inverter_result: ActuatorResult | None,
-    ) -> list[str]:
-        parts: list[str] = []
-        parts.append(f"battery_{battery_result.reason}")
-        if inverter_result is not None:
-            parts.append(f"inverter_{inverter_result.reason}")
-        return parts

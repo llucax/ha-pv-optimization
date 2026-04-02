@@ -9,6 +9,11 @@ from typing import Any
 
 from .config import load_site_config, site_config_to_appdaemon_args
 from .controller import PowerControllerCore
+from .device_models import (
+    DeviceContribution,
+    DeviceFeedForwardEngine,
+    empty_feed_forward_engine,
+)
 from .models import (
     ActuatorConfig,
     ActuatorInputs,
@@ -183,11 +188,13 @@ class TimeWeightedMetrics:
 
 class HaPvOptimization(BaseHass):  # type: ignore[misc]
     def initialize(self) -> None:
+        self.site_config = None
         self.args = self._load_effective_args(dict(self.args))
         self.entities = self._build_entity_config()
         self.config = self._build_controller_config()
         self.availability = self._build_availability_config()
         self.logging = self._build_logging_config()
+        self.device_feed_forward = self._build_device_feed_forward_engine()
         self.controller = PowerControllerCore(self.config)
         self.signal_histories = self._build_signal_histories()
         self.last_write_monotonic: dict[str, float | None] = {
@@ -231,6 +238,7 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
 
         self._seed_signal_histories()
         self._register_signal_listeners()
+        self._register_device_listeners()
 
         start = dt.datetime.now() + dt.timedelta(seconds=1)
         self.run_every(self._control_tick, start, self.config.control_interval_s)
@@ -288,6 +296,7 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             return args
 
         site_config = load_site_config(Path(site_config_path))
+        self.site_config = site_config
         effective_args = site_config_to_appdaemon_args(site_config)
         effective_args.update(args)
         return effective_args
@@ -380,6 +389,44 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             soc_min_derate_factor=self._get_float("soc_min_derate_factor", 0.25),
             net_export_negative=_as_bool(self.args.get("net_export_negative"), True),
             dry_run=_as_bool(self.args.get("dry_run"), True),
+            command_step_w=self._get_float("command_step_w", 10.0),
+            command_lockout_s=self._get_float("command_lockout_s", 12.0),
+            slow_up_deadband_w=self._get_float("slow_up_deadband_w", 80.0),
+            slow_down_deadband_w=self._get_float("slow_down_deadband_w", -40.0),
+            minor_up_event_threshold_w=self._get_float(
+                "minor_up_event_threshold_w",
+                150.0,
+            ),
+            major_up_event_threshold_w=self._get_float(
+                "major_up_event_threshold_w",
+                400.0,
+            ),
+            down_event_threshold_w=self._get_float("down_event_threshold_w", -150.0),
+            minor_up_persistence_s=self._get_float("minor_up_persistence_s", 3.0),
+            major_up_persistence_s=self._get_float("major_up_persistence_s", 2.0),
+            down_event_persistence_s=self._get_float(
+                "down_event_persistence_s",
+                3.0,
+            ),
+            minor_up_multiplier=self._get_float("minor_up_multiplier", 0.75),
+            major_up_multiplier=self._get_float("major_up_multiplier", 0.90),
+            down_event_multiplier=self._get_float("down_event_multiplier", 0.90),
+            slow_up_gain=self._get_float("slow_up_gain", 0.50),
+            slow_up_max_step_w=self._get_float("slow_up_max_step_w", 100.0),
+            slow_down_guard_w=self._get_float("slow_down_guard_w", 20.0),
+            slow_down_max_step_w=self._get_float("slow_down_max_step_w", 300.0),
+            visible_oversupply_one_sample_w=self._get_float(
+                "visible_oversupply_one_sample_w",
+                -120.0,
+            ),
+            visible_oversupply_two_sample_w=self._get_float(
+                "visible_oversupply_two_sample_w",
+                -60.0,
+            ),
+            visible_oversupply_max_cut_w=self._get_float(
+                "visible_oversupply_max_cut_w",
+                500.0,
+            ),
             thermal_policy=ThermalPolicyConfig(
                 normal_min_soc_pct=self._get_float("thermal_normal_min_soc_pct", 15.0),
                 normal_max_soc_pct=self._get_float("thermal_normal_max_soc_pct", 95.0),
@@ -575,6 +622,16 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             "battery_temperature": TimeWeightedSeries(_SIGNAL_HISTORY_WINDOW_S),
         }
 
+    def _build_device_feed_forward_engine(self) -> DeviceFeedForwardEngine:
+        if self.site_config is None:
+            return empty_feed_forward_engine()
+        return DeviceFeedForwardEngine.from_configs(
+            {
+                name: device.to_runtime_config()
+                for name, device in self.site_config.devices.items()
+            }
+        )
+
     def _seed_signal_histories(self) -> None:
         timestamp = dt.datetime.now(dt.UTC)
         self._record_signal_sample(
@@ -621,6 +678,14 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             history_key=history_key,
         )
 
+    def _register_device_listeners(self) -> None:
+        for name, runtime in self.device_feed_forward.runtimes.items():
+            self.listen_state(
+                self._on_device_state_change,
+                entity=runtime.config.entity_id,
+                device_name=name,
+            )
+
     def _on_signal_state_change(
         self,
         entity: str,
@@ -635,6 +700,23 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             return
         self.signal_histories[history_key].update(dt.datetime.now(dt.UTC), value)
 
+    def _on_device_state_change(
+        self,
+        entity: str,
+        attribute: str,
+        old: Any,
+        new: Any,
+        kwargs: dict[str, Any],
+    ) -> None:
+        value = _as_float(new)
+        if value is None:
+            return
+        self.device_feed_forward.update_sample(
+            str(kwargs["device_name"]),
+            dt.datetime.now(dt.UTC),
+            value,
+        )
+
     def _record_signal_sample(
         self,
         *,
@@ -648,6 +730,13 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         if value is None:
             return
         self.signal_histories[history_key].update(timestamp, value)
+
+    def _record_device_samples(self, timestamp: dt.datetime) -> None:
+        for name, runtime in self.device_feed_forward.runtimes.items():
+            value = self._read_entity_float(runtime.config.entity_id)
+            if value is None:
+                continue
+            self.device_feed_forward.update_sample(name, timestamp, value)
 
     def _time_weighted_metrics(self, now: dt.datetime) -> TimeWeightedMetrics:
         consumption_history = self.signal_histories["consumption"]
@@ -715,6 +804,7 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             entity_id=self.entities.battery_temperature_entity,
             timestamp=now,
         )
+        self._record_device_samples(now)
 
         consumption_w = self._read_entity_float(self.entities.consumption_entity)
         primary_actual_power_w = self._read_entity_float(
@@ -757,6 +847,10 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
 
         assert consumption_w is not None
 
+        device_feed_forward_w, device_contributions = (
+            self.device_feed_forward.contribution_snapshot(now)
+        )
+
         inputs = ControllerInputs(
             consumption_w=consumption_w,
             primary_actuator=primary_inputs,
@@ -764,6 +858,11 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             net_consumption_w=self._read_entity_float(
                 self.entities.net_consumption_entity
             ),
+            tw_consumption_fast_mean_w=tw_metrics.consumption_fast_mean_w,
+            tw_consumption_slow_q20_w=tw_metrics.consumption_slow_q20_w,
+            tw_consumption_pre_event_median_w=tw_metrics.consumption_pre_event_median_w,
+            tw_net_fast_mean_w=tw_metrics.net_fast_mean_w,
+            tw_net_slow_q20_w=tw_metrics.net_slow_q20_w,
             soc_pct=soc_pct,
             discharge_limit_pct=discharge_limit_pct,
             charging_limit_pct=charging_limit_pct,
@@ -771,6 +870,7 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             battery_temp_t30_c=tw_metrics.battery_temp_t30_c,
             battery_heating_active=battery_heating_active,
             battery_high_temp_alarm_active=battery_high_temp_alarm_active,
+            device_feed_forward_w=device_feed_forward_w,
         )
         result = self.controller.step(inputs)
         degraded_mode, degraded_reasons = self._effective_degraded_state(
@@ -835,6 +935,7 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             current_charging_limit_pct=charging_limit_pct,
             min_soc_action=min_soc_action,
             max_soc_action=max_soc_action,
+            device_contributions=device_contributions,
         )
 
     def _heartbeat_tick(self, kwargs: dict[str, Any]) -> None:
@@ -852,7 +953,15 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         return (
             f"requested={int(result.requested_target_w)}W"
             f" planned={int(result.target_limit_w)}W"
+            f" cap_cmd={int(result.cap_cmd_w)}W"
             f" effective={effective_text}"
+            f" ff={int(result.device_feed_forward_w)}W"
+            f" l_fast={int(result.estimated_load_fast_w)}W"
+            f" l_slow={int(result.estimated_load_slow_w)}W"
+            f" l_pre={int(result.visible_load_pre_event_median_w)}W"
+            f" e_fast={int(result.fast_error_w)}W"
+            f" e_slow={int(result.slow_error_w)}W"
+            f" visible_margin={result.visible_margin_w}"
             f" battery_allowed={int(result.battery_allowed_max_output_w)}W"
             f" inverter_allowed={int(result.inverter_allowed_max_output_w)}W"
             f" thermal={result.thermal_state}"
@@ -1383,6 +1492,7 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         current_charging_limit_pct: float | None,
         min_soc_action: str,
         max_soc_action: str,
+        device_contributions: tuple[DeviceContribution, ...],
     ) -> None:
         state = "running"
         if self.config.dry_run:
@@ -1477,6 +1587,24 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             ),
             "action": result.action,
             "reason": result.reason,
+            "device_feed_forward_w": round(result.device_feed_forward_w, 1),
+            "active_device_feed_forward": [
+                contribution.name
+                for contribution in device_contributions
+                if contribution.active
+            ],
+            "device_contributions": {
+                contribution.name: {
+                    "entity_id": contribution.entity_id,
+                    "kind": contribution.kind,
+                    "state": contribution.state,
+                    "power_w": round(contribution.power_w, 1),
+                    "bias_w": round(contribution.bias_w, 1),
+                    "confidence": round(contribution.confidence, 2),
+                    "active": contribution.active,
+                }
+                for contribution in device_contributions
+            },
             "degraded_mode": degraded_mode,
             "degraded_reasons": list(degraded_reasons),
             "thermal_state": result.thermal_state,
@@ -1499,9 +1627,21 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             "target_power_control_w": round(result.target_limit_w, 1),
             "requested_target_power_control_w": round(result.requested_target_w, 1),
             "desired_target_w": round(result.desired_target_w, 1),
+            "cap_cmd_w": round(result.cap_cmd_w, 1),
             "effective_target_power_control_w": None
             if result.effective_target_w is None
             else round(result.effective_target_w, 1),
+            "estimated_load_fast_w": round(result.estimated_load_fast_w, 1),
+            "estimated_load_slow_w": round(result.estimated_load_slow_w, 1),
+            "visible_load_pre_event_median_w": round(
+                result.visible_load_pre_event_median_w,
+                1,
+            ),
+            "fast_error_w": round(result.fast_error_w, 1),
+            "slow_error_w": round(result.slow_error_w, 1),
+            "visible_margin_w": None
+            if result.visible_margin_w is None
+            else round(result.visible_margin_w, 1),
             "primary_current_power_control_w": None
             if result.primary_actuator.current_limit_w is None
             else round(result.primary_actuator.current_limit_w, 1),

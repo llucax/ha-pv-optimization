@@ -63,6 +63,26 @@ class ControllerConfig:
     net_export_negative: bool = True
     dry_run: bool = False
     thermal_policy: ThermalPolicyConfig = field(default_factory=ThermalPolicyConfig)
+    command_step_w: float = 10.0
+    command_lockout_s: float = 12.0
+    slow_up_deadband_w: float = 80.0
+    slow_down_deadband_w: float = -40.0
+    minor_up_event_threshold_w: float = 150.0
+    major_up_event_threshold_w: float = 400.0
+    down_event_threshold_w: float = -150.0
+    minor_up_persistence_s: float = 3.0
+    major_up_persistence_s: float = 2.0
+    down_event_persistence_s: float = 3.0
+    minor_up_multiplier: float = 0.75
+    major_up_multiplier: float = 0.90
+    down_event_multiplier: float = 0.90
+    slow_up_gain: float = 0.50
+    slow_up_max_step_w: float = 100.0
+    slow_down_guard_w: float = 20.0
+    slow_down_max_step_w: float = 300.0
+    visible_oversupply_one_sample_w: float = -120.0
+    visible_oversupply_two_sample_w: float = -60.0
+    visible_oversupply_max_cut_w: float = 500.0
 
     @property
     def battery_actuator(self) -> ActuatorConfig:
@@ -89,6 +109,11 @@ class ControllerInputs:
     primary_actuator: ActuatorInputs | None
     trim_actuator: ActuatorInputs | None = None
     net_consumption_w: float | None = None
+    tw_consumption_fast_mean_w: float | None = None
+    tw_consumption_slow_q20_w: float | None = None
+    tw_consumption_pre_event_median_w: float | None = None
+    tw_net_fast_mean_w: float | None = None
+    tw_net_slow_q20_w: float | None = None
     soc_pct: float | None = None
     discharge_limit_pct: float | None = None
     charging_limit_pct: float | None = None
@@ -96,6 +121,7 @@ class ControllerInputs:
     battery_temp_t30_c: float | None = None
     battery_heating_active: bool = False
     battery_high_temp_alarm_active: bool = False
+    device_feed_forward_w: float = 0.0
 
     @property
     def battery_actuator(self) -> ActuatorInputs | None:
@@ -126,7 +152,8 @@ class ControllerResult:
     action: str
     target_limit_w: float
     requested_target_w: float
-    desired_target_w: float
+    desired_path_cap_w: float
+    cap_cmd_w: float
     effective_target_w: float | None
     degraded_mode: str
     degraded_reasons: tuple[str, ...]
@@ -134,6 +161,13 @@ class ControllerResult:
     desired_min_soc_pct: float
     desired_max_soc_pct: float
     battery_cap_limit_w: float
+    device_feed_forward_w: float
+    estimated_load_fast_w: float
+    estimated_load_slow_w: float
+    visible_load_pre_event_median_w: float
+    fast_error_w: float
+    slow_error_w: float
+    visible_margin_w: float | None
     effective_consumption_w: float
     smoothed_consumption_w: float
     raw_net_consumption_w: float | None
@@ -163,3 +197,7 @@ class ControllerResult:
     @property
     def inverter_allowed_max_output_w(self) -> float:
         return self.trim_allowed_max_output_w
+
+    @property
+    def desired_target_w(self) -> float:
+        return self.desired_path_cap_w

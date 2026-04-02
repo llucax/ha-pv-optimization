@@ -74,35 +74,40 @@ def test_baseline_load_is_added_to_consumption() -> None:
             ),
         )
     )
-    assert result.target_limit_w == 240.0
-    assert result.requested_target_w == 240.0
-    assert result.primary_actuator.requested_limit_w == 240.0
-    assert result.primary_actuator.target_limit_w == 200.0
-    assert result.primary_actuator.applied_limit_w == 200.0
-    assert result.effective_target_w == 200.0
+    assert result.target_limit_w == 170.0
+    assert result.requested_target_w == 170.0
+    assert result.primary_actuator.requested_limit_w == 170.0
+    assert result.primary_actuator.target_limit_w == 150.0
+    assert result.primary_actuator.applied_limit_w == 150.0
+    assert result.effective_target_w == 150.0
     assert result.action == "write"
 
 
-def test_fast_export_reduces_output_quickly() -> None:
+def test_visible_oversupply_guard_reduces_output_quickly() -> None:
     controller = _single_actuator_controller(
-        consumption_ema_tau_s=1.0,
-        net_ema_tau_s=1.0,
-        min_write_interval_s=999.0,
+        min_write_interval_s=0.0,
         max_output_w=1000.0,
     )
     result = controller.step(
         ControllerInputs(
-            consumption_w=350.0,
-            net_consumption_w=-150.0,
+            consumption_w=200.0,
             primary_actuator=ActuatorInputs(
                 current_limit_w=400.0,
-                seconds_since_last_write=10.0,
+                seconds_since_last_write=999.0,
             ),
+            trim_actuator=ActuatorInputs(
+                current_limit_w=400.0,
+                actual_power_w=400.0,
+                seconds_since_last_write=999.0,
+            ),
+            tw_consumption_fast_mean_w=400.0,
+            tw_consumption_slow_q20_w=400.0,
+            tw_consumption_pre_event_median_w=200.0,
         )
     )
-    assert result.target_limit_w == 200.0
+    assert result.target_limit_w == 260.0
     assert result.action == "write"
-    assert result.export_fast is True
+    assert result.reason.startswith("oversupply_severe")
 
 
 def test_soc_floor_forces_primary_output_to_zero() -> None:
@@ -123,7 +128,7 @@ def test_soc_floor_forces_primary_output_to_zero() -> None:
             ),
         )
     )
-    assert result.requested_target_w == 400.0
+    assert result.requested_target_w == 200.0
     assert result.target_limit_w == 0.0
     assert result.action == "write"
     assert result.primary_allowed_max_output_w == 0.0
@@ -174,10 +179,10 @@ def test_trim_actuator_absorbs_residual_after_primary_quantization() -> None:
         )
     )
     assert result.action == "write"
-    assert result.target_limit_w == 350.0
-    assert result.primary_actuator.target_limit_w == 350.0
+    assert result.target_limit_w == 100.0
+    assert result.primary_actuator.target_limit_w == 100.0
     assert result.trim_actuator is not None
-    assert result.trim_actuator.target_limit_w == 350.0
+    assert result.trim_actuator.target_limit_w == 100.0
 
 
 def test_trim_actuator_handles_change_when_primary_write_interval_blocks() -> None:
@@ -221,12 +226,12 @@ def test_trim_actuator_handles_change_when_primary_write_interval_blocks() -> No
         )
     )
     assert result.primary_actuator.action == "skip"
-    assert result.primary_actuator.target_limit_w == 350.0
+    assert result.primary_actuator.target_limit_w == 100.0
     assert result.primary_actuator.applied_limit_w == 300.0
     assert result.trim_actuator is not None
     assert result.trim_actuator.action == "write"
-    assert result.trim_actuator.target_limit_w == 350.0
-    assert result.effective_target_w == 300.0
+    assert result.trim_actuator.target_limit_w == 100.0
+    assert result.effective_target_w == 100.0
     assert result.degraded_mode == "battery_not_enforcing_target"
 
 
@@ -254,7 +259,7 @@ def test_trim_actuator_can_run_alone_when_primary_is_unavailable() -> None:
     )
     result = controller.step(
         ControllerInputs(
-            consumption_w=180.0,
+            consumption_w=300.0,
             primary_actuator=None,
             trim_actuator=ActuatorInputs(
                 current_limit_w=100.0,
@@ -264,9 +269,9 @@ def test_trim_actuator_can_run_alone_when_primary_is_unavailable() -> None:
     )
     assert result.action == "write"
     assert result.primary_actuator.available is False
-    assert result.target_limit_w == 180.0
+    assert result.target_limit_w == 200.0
     assert result.trim_actuator is not None
-    assert result.trim_actuator.target_limit_w == 180.0
+    assert result.trim_actuator.target_limit_w == 200.0
 
 
 def test_path_cap_is_clamped_by_battery_before_inverter_target() -> None:
@@ -313,14 +318,36 @@ def test_path_cap_is_clamped_by_battery_before_inverter_target() -> None:
         )
     )
 
-    assert result.requested_target_w == 155.0
+    assert result.requested_target_w == 0.0
     assert result.target_limit_w == 0.0
     assert result.primary_actuator.target_limit_w == 0.0
     assert result.trim_actuator is not None
     assert result.trim_actuator.target_limit_w == 0.0
     assert result.trim_actuator.reason == "below_min_supported_by_other"
     assert result.effective_target_w == 0.0
-    assert result.degraded_mode == "inverter_not_enforcing_target,battery_limited"
+    assert result.degraded_mode == "inverter_not_enforcing_target"
+
+
+def test_device_feed_forward_bias_is_added_to_requested_target() -> None:
+    controller = _single_actuator_controller(
+        consumption_ema_tau_s=1.0,
+        min_write_interval_s=0.0,
+        max_output_w=1000.0,
+    )
+    result = controller.step(
+        ControllerInputs(
+            consumption_w=200.0,
+            primary_actuator=ActuatorInputs(
+                current_limit_w=100.0,
+                seconds_since_last_write=999.0,
+            ),
+            device_feed_forward_w=120.0,
+        )
+    )
+
+    assert result.requested_target_w == 200.0
+    assert result.device_feed_forward_w == 120.0
+    assert "device_feed_forward" in result.reason
 
 
 def test_hot_thermal_state_caps_output_and_soc_targets() -> None:

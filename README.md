@@ -41,6 +41,7 @@ See `docs/ASSUMPTIONS.md` for the current fit and limitations.
 - `src/ha_pv_optimization/models.py` - typed controller inputs, outputs, and config models
 - `src/ha_pv_optimization/config.py` - typed site-config loading and conversion helpers
 - `src/ha_pv_optimization/signals.py` - reusable signal helpers and smoothing math
+- `src/ha_pv_optimization/device_models.py` - reusable per-device feed-forward models
 - `src/ha_pv_optimization/controller.py` - pure control logic and orchestration
 - `src/ha_pv_optimization/core.py` - compatibility re-export layer for the controller API
 - `src/ha_pv_optimization/appdaemon.py` - AppDaemon integration and HA state publishing
@@ -69,6 +70,8 @@ uv run python -m ha_pv_optimization.replay \
 ```
 
 The loader skips malformed CSV rows by default and prints warnings. Use `--strict-csv` if you want those rows to fail fast instead.
+
+When `--site-config` points at a config with a `devices:` section, replay enables those configured device models too, so baseline scorecards reflect the same device feed-forward wiring as the live controller.
 
 For deployment guidance, start with:
 

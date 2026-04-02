@@ -37,7 +37,7 @@ inverter:
 
 control:
   baseline_load_w: 0
-  control_interval_s: 30
+  control_interval_s: 5
   consumption_ema_tau_s: 75
   net_ema_tau_s: 45
   deadband_w: 50
@@ -46,6 +46,26 @@ control:
   import_correction_gain: 0.35
   export_correction_gain: 1.0
   net_export_negative: true
+  command_step_w: 10
+  command_lockout_s: 12
+  slow_up_deadband_w: 80
+  slow_down_deadband_w: -40
+  minor_up_event_threshold_w: 150
+  major_up_event_threshold_w: 400
+  down_event_threshold_w: -150
+  minor_up_persistence_s: 3
+  major_up_persistence_s: 2
+  down_event_persistence_s: 3
+  minor_up_multiplier: 0.75
+  major_up_multiplier: 0.90
+  down_event_multiplier: 0.90
+  slow_up_gain: 0.50
+  slow_up_max_step_w: 100
+  slow_down_guard_w: 20
+  slow_down_max_step_w: 300
+  visible_oversupply_one_sample_w: -120
+  visible_oversupply_two_sample_w: -60
+  visible_oversupply_max_cut_w: 500
 
 battery_policy:
   soc_stop_buffer_pct: 0
@@ -76,3 +96,46 @@ availability:
 
 logging:
   debug_entity_prefix: sensor.ha_pv_optimization
+
+devices:
+  microwave:
+    kind: burst_high_power
+    entity_id: sensor.outlet_microwave_power
+    enabled: true
+    high_threshold_w: 300
+    enter_persistence_s: 2
+    exit_persistence_s: 2
+    ff_gain: 0.95
+    ff_hold_s: 90
+
+  under_cabinet_appliances:
+    kind: composite_kitchen_outlet
+    entity_id: sensor.outlet_under_cabinet_appliances_power
+    enabled: true
+    high_threshold_w: 300
+    enter_persistence_s: 2
+    exit_persistence_s: 2
+    ff_gain: 0.90
+    ff_hold_s: 90
+
+  oven:
+    kind: cyclic_heater
+    entity_id: sensor.outlet_oven_power
+    enabled: true
+    low_threshold_w: 20
+    high_threshold_w: 500
+    enter_persistence_s: 2
+    exit_persistence_s: 2
+    ff_gain: 0.90
+    ff_hold_s: 120
+
+  dishwasher:
+    kind: cyclic_heater
+    entity_id: sensor.outlet_dishwasher_power
+    enabled: true
+    low_threshold_w: 20
+    high_threshold_w: 500
+    enter_persistence_s: 3
+    exit_persistence_s: 3
+    ff_gain: 0.90
+    ff_hold_s: 120

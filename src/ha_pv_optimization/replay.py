@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .config import controller_config_from_site_config, load_site_config
 from .controller import PowerControllerCore
+from .device_models import DeviceFeedForwardEngine, empty_feed_forward_engine
 from .models import ActuatorInputs, ControllerConfig, ControllerInputs, ControllerResult
 
 
@@ -62,6 +63,69 @@ class PiecewiseConstantSignal:
                 break
             latest_value = sample.value
         return latest_value
+
+    def mean(self, window_s: float, now: datetime) -> float | None:
+        segments = self._window_segments(window_s=window_s, now=now)
+        if not segments:
+            return None
+        weighted_sum = sum(value * duration_s for value, duration_s in segments)
+        total_duration_s = sum(duration_s for _, duration_s in segments)
+        if total_duration_s <= 0:
+            return None
+        return weighted_sum / total_duration_s
+
+    def quantile(self, window_s: float, q: float, now: datetime) -> float | None:
+        if not 0.0 <= q <= 1.0:
+            raise ValueError("quantile q must be between 0 and 1")
+        segments = self._window_segments(window_s=window_s, now=now)
+        if not segments:
+            return None
+        weighted_values = sorted(segments, key=lambda item: item[0])
+        total_duration_s = sum(duration_s for _, duration_s in weighted_values)
+        if total_duration_s <= 0:
+            return None
+        threshold_s = q * total_duration_s
+        accumulated_s = 0.0
+        for value, duration_s in weighted_values:
+            accumulated_s += duration_s
+            if accumulated_s >= threshold_s:
+                return value
+        return weighted_values[-1][0]
+
+    def median(self, window_s: float, now: datetime) -> float | None:
+        return self.quantile(window_s=window_s, q=0.5, now=now)
+
+    def _window_segments(
+        self,
+        *,
+        window_s: float,
+        now: datetime,
+    ) -> list[tuple[float, float]]:
+        if window_s <= 0:
+            return []
+
+        start = now - timedelta(seconds=window_s)
+        current_value = self.value_at(start)
+        if current_value is None:
+            return []
+
+        current_start = start
+        segments: list[tuple[float, float]] = []
+        for sample in self.samples:
+            if sample.timestamp <= start:
+                continue
+            if sample.timestamp > now:
+                break
+            duration_s = (sample.timestamp - current_start).total_seconds()
+            if duration_s > 0:
+                segments.append((current_value, duration_s))
+            current_value = sample.value
+            current_start = sample.timestamp
+
+        final_duration_s = (now - current_start).total_seconds()
+        if final_duration_s > 0:
+            segments.append((current_value, final_duration_s))
+        return segments
 
 
 @dataclass(frozen=True)
@@ -205,8 +269,16 @@ class GitReference:
 
 
 class ReplayRunner:
-    def __init__(self, config: ControllerConfig) -> None:
+    def __init__(
+        self,
+        config: ControllerConfig,
+        *,
+        device_engine: DeviceFeedForwardEngine | None = None,
+    ) -> None:
         self.config = config
+        self.device_engine = (
+            empty_feed_forward_engine() if device_engine is None else device_engine
+        )
 
     @classmethod
     def from_defaults(cls) -> ReplayRunner:
@@ -229,10 +301,29 @@ class ReplayRunner:
         ticks: list[ReplayTick] = []
 
         while current_time <= end_time:
+            for runtime in self.device_engine.runtimes.values():
+                power_w = dataset.value_at(runtime.config.entity_id, current_time)
+                if power_w is None:
+                    continue
+                runtime.update_sample(current_time, power_w)
+            device_feed_forward_w, _ = self.device_engine.contribution_snapshot(
+                current_time
+            )
+
             consumption_w = consumption_signal.value_at(current_time)
             if consumption_w is None:
                 current_time += timedelta(seconds=self.config.control_interval_s)
                 continue
+
+            inverter_output_w = dataset.value_at(
+                scenario.inverter_output_entity,
+                current_time,
+            )
+            net_signal = (
+                None
+                if scenario.net_consumption_entity is None
+                else dataset.signal(scenario.net_consumption_entity)
+            )
 
             result = controller.step(
                 ControllerInputs(
@@ -240,13 +331,35 @@ class ReplayRunner:
                     primary_actuator=ActuatorInputs(current_limit_w=battery_limit_w),
                     trim_actuator=None
                     if self.config.inverter_actuator is None
-                    else ActuatorInputs(current_limit_w=inverter_limit_w),
+                    else ActuatorInputs(
+                        current_limit_w=inverter_limit_w,
+                        actual_power_w=inverter_output_w,
+                    ),
                     net_consumption_w=dataset.value_at(
                         scenario.net_consumption_entity,
                         current_time,
                     ),
+                    tw_consumption_fast_mean_w=consumption_signal.mean(
+                        3.0, current_time
+                    ),
+                    tw_consumption_slow_q20_w=consumption_signal.quantile(
+                        20.0,
+                        0.2,
+                        current_time,
+                    ),
+                    tw_consumption_pre_event_median_w=consumption_signal.median(
+                        10.0,
+                        current_time,
+                    ),
+                    tw_net_fast_mean_w=None
+                    if net_signal is None
+                    else net_signal.mean(3.0, current_time),
+                    tw_net_slow_q20_w=None
+                    if net_signal is None
+                    else net_signal.quantile(20.0, 0.2, current_time),
                     soc_pct=scenario.battery_soc_pct,
                     discharge_limit_pct=scenario.battery_discharge_limit_pct,
+                    device_feed_forward_w=device_feed_forward_w,
                 )
             )
 
@@ -263,10 +376,7 @@ class ReplayRunner:
                     timestamp=current_time,
                     consumption_w=consumption_w,
                     effective_target_w=result.effective_target_w or 0.0,
-                    measured_inverter_output_w=dataset.value_at(
-                        scenario.inverter_output_entity,
-                        current_time,
-                    ),
+                    measured_inverter_output_w=inverter_output_w,
                     result=result,
                 )
             )
@@ -527,11 +637,18 @@ def main(argv: list[str] | None = None) -> int:
             skip_invalid_rows=not args.strict_csv,
         )
         controller_config = _default_replay_config()
+        device_engine = empty_feed_forward_engine()
         consumption_entity = args.consumption_entity
         if args.site_config is not None:
             site_config = load_site_config(args.site_config)
             controller_config = controller_config_from_site_config(site_config)
             consumption_entity = site_config.consumption.entity
+            device_engine = DeviceFeedForwardEngine.from_configs(
+                {
+                    name: device.to_runtime_config()
+                    for name, device in site_config.devices.items()
+                }
+            )
 
         scenario = ReplayScenario(
             consumption_entity=consumption_entity,
@@ -542,7 +659,10 @@ def main(argv: list[str] | None = None) -> int:
             battery_soc_pct=args.battery_soc_pct,
             battery_discharge_limit_pct=args.battery_discharge_limit_pct,
         )
-        run = ReplayRunner(controller_config).run(dataset, scenario)
+        run = ReplayRunner(controller_config, device_engine=device_engine).run(
+            dataset,
+            scenario,
+        )
     except ReplayInputError as exc:
         parser.exit(2, f"Replay input error: {exc}\n")
 

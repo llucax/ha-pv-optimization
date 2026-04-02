@@ -111,7 +111,7 @@ def test_primary_missing_is_not_blocking_when_trim_available(monkeypatch: Any) -
     assert status_update[2]["primary_power_control_available"] is False
     assert status_update[2]["trim_power_control_available"] is True
     assert status_update[2]["available_actuators"] == ["number.inverter_limit"]
-    assert status_update[2]["trim_target_power_control_w"] == 180.0
+    assert status_update[2]["trim_target_power_control_w"] == 100.0
 
 
 def test_all_actuators_missing_is_expected_at_battery_reserve(monkeypatch: Any) -> None:
@@ -272,13 +272,13 @@ def test_live_mode_writes_primary_and_trim_targets() -> None:
     app._control_tick({})
 
     assert app.service_calls == [
-        ("number/set_value", {"entity_id": "number.battery_limit", "value": 350}),
-        ("number/set_value", {"entity_id": "number.inverter_limit", "value": 350}),
+        ("number/set_value", {"entity_id": "number.battery_limit", "value": 100}),
+        ("number/set_value", {"entity_id": "number.inverter_limit", "value": 100}),
     ]
     status_update = _latest_status_update(app)
-    assert status_update[2]["target_power_control_w"] == 350.0
-    assert status_update[2]["primary_target_power_control_w"] == 350.0
-    assert status_update[2]["trim_target_power_control_w"] == 350.0
+    assert status_update[2]["target_power_control_w"] == 100.0
+    assert status_update[2]["primary_target_power_control_w"] == 100.0
+    assert status_update[2]["trim_target_power_control_w"] == 100.0
 
 
 def test_debug_target_entities_publish_zero_as_string() -> None:
@@ -377,7 +377,7 @@ def test_status_reports_requested_translated_and_applied_targets() -> None:
 
     assert app.service_calls == []
     status_update = _latest_status_update(app)
-    assert status_update[2]["requested_target_power_control_w"] == 155.0
+    assert status_update[2]["requested_target_power_control_w"] == 0.0
     assert status_update[2]["target_power_control_w"] == 0.0
     assert status_update[2]["effective_target_power_control_w"] == 0.0
     assert status_update[2]["battery_requested_power_control_w"] == 0.0
@@ -436,7 +436,7 @@ def test_skip_cycles_emit_startup_and_periodic_heartbeat(monkeypatch: Any) -> No
     app._heartbeat_tick({})
     heartbeat_messages = _heartbeat_messages(app)
     assert len(heartbeat_messages) == 2
-    assert "requested=155W" in heartbeat_messages[-1]
+    assert "requested=70W" in heartbeat_messages[-1]
 
     app._heartbeat_tick({})
     assert len(_heartbeat_messages(app)) == 3
@@ -573,6 +573,74 @@ def test_time_weighted_metrics_are_published_and_listeners_registered() -> None:
     assert status_update[2]["battery_temperature_t30_c"] == 30.0
 
 
+def test_site_config_devices_produce_feed_forward_status(tmp_path: Path) -> None:
+    site_config_path = tmp_path / "site.yaml"
+    site_config_path.write_text(
+        "consumption:\n"
+        "  entity: sensor.site_load\n"
+        "battery:\n"
+        "  power_control_entity: number.site_battery_limit\n"
+        "  max_output_w: 800\n"
+        "  power_step_w: 50\n"
+        "  min_change_w: 50\n"
+        "  min_write_interval_s: 0\n"
+        "inverter:\n"
+        "  power_control_entity: number.site_inverter_limit\n"
+        "  max_output_w: 800\n"
+        "  min_output_w: 30\n"
+        "  power_step_w: 25\n"
+        "  min_change_w: 25\n"
+        "  min_write_interval_s: 0\n"
+        "devices:\n"
+        "  microwave:\n"
+        "    kind: burst_high_power\n"
+        "    entity_id: sensor.outlet_microwave_power\n"
+        "    high_threshold_w: 300\n"
+        "    enter_persistence_s: 0\n"
+        "    exit_persistence_s: 2\n"
+        "    ff_gain: 0.95\n"
+        "    ff_hold_s: 90\n",
+        encoding="utf-8",
+    )
+    app = FakeHaPvOptimization(
+        args={
+            "site_config_path": str(site_config_path),
+            "dry_run": True,
+        },
+        state_map={
+            "sensor.site_load": "200",
+            "sensor.outlet_microwave_power": "1400",
+            "number.site_battery_limit": {
+                "state": "0",
+                "attributes": {"min": 0, "max": 800, "step": 50},
+            },
+            "number.site_inverter_limit": {
+                "state": "0",
+                "attributes": {"min": 30, "max": 800, "step": 25},
+            },
+        },
+    )
+
+    app.initialize()
+    listener_entities = sorted(
+        kwargs["entity"] for _, kwargs in app.state_listeners if "entity" in kwargs
+    )
+    assert "sensor.outlet_microwave_power" in listener_entities
+
+    app._on_device_state_change(
+        "sensor.outlet_microwave_power",
+        "state",
+        "0",
+        "1400",
+        {"device_name": "microwave"},
+    )
+    app._control_tick({})
+
+    status_update = _latest_status_update(app)
+    assert status_update[2]["device_feed_forward_w"] > 0.0
+    assert "microwave" in status_update[2]["active_device_feed_forward"]
+
+
 def test_status_reports_command_mismatch_after_grace(monkeypatch: Any) -> None:
     now = {"value": 0.0}
     monkeypatch.setattr(appdaemon_module.time, "monotonic", lambda: now["value"])
@@ -612,7 +680,7 @@ def test_status_reports_command_mismatch_after_grace(monkeypatch: Any) -> None:
         status_update[2]["battery_command_mismatch_reason"]
         == "probable_rejected_command"
     )
-    assert status_update[2]["battery_command_mismatch_w"] == -200.0
+    assert status_update[2]["battery_command_mismatch_w"] == -100.0
     assert "battery_probable_rejected_command" in status_update[2]["degraded_reasons"]
 
 
@@ -655,7 +723,7 @@ def test_status_reports_external_override_after_command_grace(monkeypatch: Any) 
         status_update[2]["battery_command_mismatch_reason"]
         == "probable_external_override"
     )
-    assert status_update[2]["battery_command_mismatch_w"] == 100.0
+    assert status_update[2]["battery_command_mismatch_w"] == 200.0
     assert "battery_probable_external_override" in status_update[2]["degraded_reasons"]
 
 
