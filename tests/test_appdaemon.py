@@ -554,7 +554,9 @@ def test_time_weighted_metrics_are_published_and_listeners_registered() -> None:
     app.initialize()
 
     listener_entities = sorted(
-        kwargs["entity"] for _, kwargs in app.state_listeners if "entity" in kwargs
+        kwargs["entity_id"]
+        for _, kwargs in app.state_listeners
+        if "entity_id" in kwargs
     )
     assert listener_entities == [
         "sensor.battery_temp",
@@ -623,7 +625,9 @@ def test_site_config_devices_produce_feed_forward_status(tmp_path: Path) -> None
 
     app.initialize()
     listener_entities = sorted(
-        kwargs["entity"] for _, kwargs in app.state_listeners if "entity" in kwargs
+        kwargs["entity_id"]
+        for _, kwargs in app.state_listeners
+        if "entity_id" in kwargs
     )
     assert "sensor.outlet_microwave_power" in listener_entities
 

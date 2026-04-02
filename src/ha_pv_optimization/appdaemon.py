@@ -674,7 +674,7 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             return
         self.listen_state(
             self._on_signal_state_change,
-            entity=entity_id,
+            entity_id=entity_id,
             history_key=history_key,
         )
 
@@ -682,7 +682,7 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         for name, runtime in self.device_feed_forward.runtimes.items():
             self.listen_state(
                 self._on_device_state_change,
-                entity=runtime.config.entity_id,
+                entity_id=runtime.config.entity_id,
                 device_name=name,
             )
 
