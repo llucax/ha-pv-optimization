@@ -9,6 +9,8 @@ from ha_pv_optimization.models import (
     ActuatorInputs,
     ControllerConfig,
     ControllerInputs,
+    ThermalPolicyConfig,
+    ThermalState,
 )
 
 
@@ -108,6 +110,7 @@ def test_soc_floor_forces_primary_output_to_zero() -> None:
         consumption_ema_tau_s=1.0,
         min_write_interval_s=0.0,
         max_output_w=1000.0,
+        thermal_policy=ThermalPolicyConfig(normal_min_soc_pct=25.0),
     )
     result = controller.step(
         ControllerInputs(
@@ -154,6 +157,7 @@ def test_trim_actuator_absorbs_residual_after_primary_quantization() -> None:
                 emergency_max_decrease_per_cycle_w=500.0,
             ),
             consumption_ema_tau_s=1.0,
+            thermal_policy=ThermalPolicyConfig(normal_min_soc_pct=25.0),
         )
     )
     result = controller.step(
@@ -200,6 +204,7 @@ def test_trim_actuator_handles_change_when_primary_write_interval_blocks() -> No
                 emergency_max_decrease_per_cycle_w=500.0,
             ),
             consumption_ema_tau_s=1.0,
+            thermal_policy=ThermalPolicyConfig(normal_min_soc_pct=25.0),
         )
     )
     result = controller.step(
@@ -244,6 +249,7 @@ def test_trim_actuator_can_run_alone_when_primary_is_unavailable() -> None:
                 emergency_max_decrease_per_cycle_w=500.0,
             ),
             consumption_ema_tau_s=1.0,
+            thermal_policy=ThermalPolicyConfig(normal_min_soc_pct=25.0),
         )
     )
     result = controller.step(
@@ -288,6 +294,7 @@ def test_path_cap_is_clamped_by_battery_before_inverter_target() -> None:
                 emergency_max_decrease_per_cycle_w=500.0,
             ),
             consumption_ema_tau_s=1.0,
+            thermal_policy=ThermalPolicyConfig(normal_min_soc_pct=25.0),
         )
     )
     result = controller.step(
@@ -314,3 +321,112 @@ def test_path_cap_is_clamped_by_battery_before_inverter_target() -> None:
     assert result.trim_actuator.reason == "below_min_supported_by_other"
     assert result.effective_target_w == 0.0
     assert result.degraded_mode == "inverter_not_enforcing_target,battery_limited"
+
+
+def test_hot_thermal_state_caps_output_and_soc_targets() -> None:
+    controller = _single_actuator_controller(
+        consumption_ema_tau_s=1.0,
+        min_write_interval_s=0.0,
+        max_output_w=1000.0,
+        thermal_policy=ThermalPolicyConfig(
+            hot_enter_t30_c=35.0,
+            hot_exit_t30_c=33.0,
+            hot_exit_hold_s=60.0,
+            hot_min_soc_pct=15.0,
+            hot_max_soc_pct=90.0,
+            hot_cap_limit_w=800.0,
+            very_hot_enter_t30_c=40.0,
+            very_hot_enter_t5_c=45.0,
+            very_hot_exit_t30_c=38.0,
+            very_hot_exit_t5_c=43.0,
+            very_hot_exit_hold_s=60.0,
+            very_hot_min_soc_pct=20.0,
+            very_hot_max_soc_pct=85.0,
+            very_hot_cap_limit_w=400.0,
+        ),
+    )
+    result = controller.step(
+        ControllerInputs(
+            consumption_w=600.0,
+            soc_pct=80.0,
+            primary_actuator=ActuatorInputs(
+                current_limit_w=0.0,
+                seconds_since_last_write=999.0,
+            ),
+            battery_temp_t30_c=36.0,
+            battery_temp_t5_c=30.0,
+        )
+    )
+
+    assert result.thermal_state == ThermalState.HOT
+    assert result.desired_min_soc_pct == 15.0
+    assert result.desired_max_soc_pct == 90.0
+    assert result.battery_cap_limit_w == 800.0
+
+
+def test_very_hot_state_limits_battery_output_and_recovers_with_hysteresis() -> None:
+    controller = _single_actuator_controller(
+        consumption_ema_tau_s=1.0,
+        control_interval_s=30.0,
+        min_write_interval_s=0.0,
+        max_output_w=1000.0,
+        thermal_policy=ThermalPolicyConfig(
+            hot_enter_t30_c=35.0,
+            hot_exit_t30_c=33.0,
+            hot_exit_hold_s=60.0,
+            hot_min_soc_pct=15.0,
+            hot_max_soc_pct=90.0,
+            hot_cap_limit_w=800.0,
+            very_hot_enter_t30_c=40.0,
+            very_hot_enter_t5_c=45.0,
+            very_hot_exit_t30_c=38.0,
+            very_hot_exit_t5_c=43.0,
+            very_hot_exit_hold_s=60.0,
+            very_hot_min_soc_pct=20.0,
+            very_hot_max_soc_pct=85.0,
+            very_hot_cap_limit_w=400.0,
+        ),
+    )
+    hot_result = controller.step(
+        ControllerInputs(
+            consumption_w=700.0,
+            soc_pct=80.0,
+            primary_actuator=ActuatorInputs(
+                current_limit_w=0.0,
+                seconds_since_last_write=999.0,
+            ),
+            battery_temp_t30_c=41.0,
+            battery_temp_t5_c=46.0,
+        )
+    )
+    assert hot_result.thermal_state == ThermalState.VERY_HOT
+    assert hot_result.battery_cap_limit_w == 400.0
+    assert hot_result.primary_allowed_max_output_w == 400.0
+
+    recover_step_1 = controller.step(
+        ControllerInputs(
+            consumption_w=700.0,
+            soc_pct=80.0,
+            primary_actuator=ActuatorInputs(
+                current_limit_w=400.0,
+                seconds_since_last_write=999.0,
+            ),
+            battery_temp_t30_c=37.0,
+            battery_temp_t5_c=42.0,
+        )
+    )
+    assert recover_step_1.thermal_state == ThermalState.VERY_HOT
+
+    recover_step_2 = controller.step(
+        ControllerInputs(
+            consumption_w=700.0,
+            soc_pct=80.0,
+            primary_actuator=ActuatorInputs(
+                current_limit_w=400.0,
+                seconds_since_last_write=999.0,
+            ),
+            battery_temp_t30_c=37.0,
+            battery_temp_t5_c=42.0,
+        )
+    )
+    assert recover_step_2.thermal_state == ThermalState.HOT

@@ -1,6 +1,34 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import StrEnum
+
+
+class ThermalState(StrEnum):
+    NORMAL = "NORMAL"
+    HOT = "HOT"
+    VERY_HOT = "VERY_HOT"
+
+
+@dataclass(frozen=True)
+class ThermalPolicyConfig:
+    normal_min_soc_pct: float = 15.0
+    normal_max_soc_pct: float = 95.0
+    normal_cap_limit_w: float = 800.0
+    hot_enter_t30_c: float = 35.0
+    hot_exit_t30_c: float = 33.0
+    hot_exit_hold_s: float = 3600.0
+    hot_min_soc_pct: float = 15.0
+    hot_max_soc_pct: float = 90.0
+    hot_cap_limit_w: float = 800.0
+    very_hot_enter_t30_c: float = 40.0
+    very_hot_enter_t5_c: float = 45.0
+    very_hot_exit_t30_c: float = 38.0
+    very_hot_exit_t5_c: float = 43.0
+    very_hot_exit_hold_s: float = 3600.0
+    very_hot_min_soc_pct: float = 20.0
+    very_hot_max_soc_pct: float = 85.0
+    very_hot_cap_limit_w: float = 400.0
 
 
 @dataclass(frozen=True)
@@ -34,6 +62,7 @@ class ControllerConfig:
     soc_min_derate_factor: float = 0.25
     net_export_negative: bool = True
     dry_run: bool = False
+    thermal_policy: ThermalPolicyConfig = field(default_factory=ThermalPolicyConfig)
 
     @property
     def battery_actuator(self) -> ActuatorConfig:
@@ -62,6 +91,11 @@ class ControllerInputs:
     net_consumption_w: float | None = None
     soc_pct: float | None = None
     discharge_limit_pct: float | None = None
+    charging_limit_pct: float | None = None
+    battery_temp_t5_c: float | None = None
+    battery_temp_t30_c: float | None = None
+    battery_heating_active: bool = False
+    battery_high_temp_alarm_active: bool = False
 
     @property
     def battery_actuator(self) -> ActuatorInputs | None:
@@ -96,6 +130,10 @@ class ControllerResult:
     effective_target_w: float | None
     degraded_mode: str
     degraded_reasons: tuple[str, ...]
+    thermal_state: ThermalState
+    desired_min_soc_pct: float
+    desired_max_soc_pct: float
+    battery_cap_limit_w: float
     effective_consumption_w: float
     smoothed_consumption_w: float
     raw_net_consumption_w: float | None

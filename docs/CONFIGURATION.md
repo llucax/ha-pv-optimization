@@ -36,6 +36,9 @@ If either required key is missing, startup fails.
 - `battery_temperature_entity` - optional battery temperature sensor in celsius; used for time-weighted temperature metrics today and later thermal policy stages.
 - `battery_soc_entity` - battery state of charge sensor in percent; optional, used for reserve protection.
 - `battery_discharge_limit_entity` - battery reserve floor in percent; optional, used together with `battery_soc_entity`.
+- `battery_charging_limit_entity` - battery max-SOC rail entity in percent; optional until thermal/SOC rail control is enabled.
+- `battery_heating_entity` - optional NOAH heating-status binary sensor.
+- `battery_high_temp_alarm_entity` - optional high-temperature alarm binary sensor or problem entity; when active it pushes the controller into the `VERY_HOT` state.
 
 If either battery protection input is missing, the controller skips the SOC-based protection layer. When enabled, the SOC protection applies to the battery actuator. When the battery actuator is temporarily unavailable but the inverter actuator is still available, the controller can continue in inverter-only mode.
 
@@ -100,6 +103,32 @@ If `control_cycle_log` is not set, the per-cycle diagnostics stay on the main Ap
 - `inverter_max_decrease_per_cycle_w` - normal maximum inverter-actuator decrease per control cycle; default `300`.
 - `inverter_emergency_max_decrease_per_cycle_w` - faster inverter-actuator decrease limit used during strong export; default `500`.
 
+## Thermal policy
+
+- `thermal_normal_min_soc_pct` - desired discharge-floor rail in the `NORMAL` state; default `15`.
+- `thermal_normal_max_soc_pct` - desired charging-limit rail in the `NORMAL` state; default `95`.
+- `thermal_normal_cap_limit_w` - battery-side output cap in the `NORMAL` state; default `800`.
+- `thermal_hot_enter_t30_c` - enter `HOT` when the 30-minute temperature mean reaches this threshold; default `35`.
+- `thermal_hot_exit_t30_c` - allow exit from `HOT` when the 30-minute temperature mean stays below this threshold; default `33`.
+- `thermal_hot_exit_hold_s` - seconds below the `HOT` exit threshold before leaving `HOT`; default `3600`.
+- `thermal_hot_min_soc_pct` - desired discharge-floor rail in `HOT`; default `15`.
+- `thermal_hot_max_soc_pct` - desired charging-limit rail in `HOT`; default `90`.
+- `thermal_hot_cap_limit_w` - battery-side output cap in `HOT`; default `800`.
+- `thermal_very_hot_enter_t30_c` - enter `VERY_HOT` when the 30-minute temperature mean reaches this threshold; default `40`.
+- `thermal_very_hot_enter_t5_c` - enter `VERY_HOT` when the 5-minute temperature mean reaches this threshold; default `45`.
+- `thermal_very_hot_exit_t30_c` - allow exit from `VERY_HOT` when the 30-minute temperature mean stays below this threshold; default `38`.
+- `thermal_very_hot_exit_t5_c` - allow exit from `VERY_HOT` when the 5-minute temperature mean stays below this threshold; default `43`.
+- `thermal_very_hot_exit_hold_s` - seconds below the `VERY_HOT` exit thresholds before leaving `VERY_HOT`; default `3600`.
+- `thermal_very_hot_min_soc_pct` - desired discharge-floor rail in `VERY_HOT`; default `20`.
+- `thermal_very_hot_max_soc_pct` - desired charging-limit rail in `VERY_HOT`; default `85`.
+- `thermal_very_hot_cap_limit_w` - battery-side output cap in `VERY_HOT`; default `400`.
+
+These thermal state outputs now drive:
+
+- the battery-side cap ceiling used by the controller
+- the desired `number.growatt_noah_2000_discharge_limit` target
+- the desired `number.growatt_noah_2000_charging_limit` target
+
 ## Battery protection
 
 - `soc_stop_buffer_pct` - stop-output buffer above the configured discharge floor; default `3`.
@@ -127,6 +156,8 @@ Current mismatch classification is heuristic:
 
 - `probable_rejected_command` means the actuator still matches the pre-command observed value after the grace window, so the controller write appears not to have taken effect.
 - `probable_external_override` means the actuator moved away from the controller target to a third value after the grace window, which likely indicates either a schedule override or a manual override.
+
+Thermal/SOC diagnostics are also published, including `thermal_state`, `desired_min_soc_pct`, `desired_max_soc_pct`, `battery_cap_limit_w`, `battery_min_soc_action`, and `battery_max_soc_action`.
 
 ## Availability-aware warning behavior
 

@@ -6,7 +6,7 @@ from typing import Any
 
 import yaml
 
-from .models import ActuatorConfig, ControllerConfig
+from .models import ActuatorConfig, ControllerConfig, ThermalPolicyConfig
 
 
 def _mapping(value: Any, *, context: str) -> dict[str, Any]:
@@ -135,6 +135,9 @@ class BatterySensorsSiteConfig:
     soc_entity: str | None = None
     temperature_entity: str | None = None
     discharge_limit_entity: str | None = None
+    charging_limit_entity: str | None = None
+    heating_entity: str | None = None
+    high_temp_alarm_entity: str | None = None
 
     @classmethod
     def from_mapping(cls, mapping: dict[str, Any]) -> BatterySensorsSiteConfig:
@@ -142,6 +145,9 @@ class BatterySensorsSiteConfig:
             soc_entity=_optional_str(mapping, "soc_entity"),
             temperature_entity=_optional_str(mapping, "temperature_entity"),
             discharge_limit_entity=_optional_str(mapping, "discharge_limit_entity"),
+            charging_limit_entity=_optional_str(mapping, "charging_limit_entity"),
+            heating_entity=_optional_str(mapping, "heating_entity"),
+            high_temp_alarm_entity=_optional_str(mapping, "high_temp_alarm_entity"),
         )
 
 
@@ -263,6 +269,85 @@ class LoggingSiteConfig:
 
 
 @dataclass(frozen=True)
+class ThermalSiteConfig:
+    normal_min_soc_pct: float = 15.0
+    normal_max_soc_pct: float = 95.0
+    normal_cap_limit_w: float = 800.0
+    hot_enter_t30_c: float = 35.0
+    hot_exit_t30_c: float = 33.0
+    hot_exit_hold_s: float = 3600.0
+    hot_min_soc_pct: float = 15.0
+    hot_max_soc_pct: float = 90.0
+    hot_cap_limit_w: float = 800.0
+    very_hot_enter_t30_c: float = 40.0
+    very_hot_enter_t5_c: float = 45.0
+    very_hot_exit_t30_c: float = 38.0
+    very_hot_exit_t5_c: float = 43.0
+    very_hot_exit_hold_s: float = 3600.0
+    very_hot_min_soc_pct: float = 20.0
+    very_hot_max_soc_pct: float = 85.0
+    very_hot_cap_limit_w: float = 400.0
+
+    @classmethod
+    def from_mapping(cls, mapping: dict[str, Any] | None) -> ThermalSiteConfig:
+        if mapping is None:
+            return cls()
+        return cls(
+            normal_min_soc_pct=_with_default(
+                _optional_float(mapping, "normal_min_soc_pct"), 15.0
+            ),
+            normal_max_soc_pct=_with_default(
+                _optional_float(mapping, "normal_max_soc_pct"), 95.0
+            ),
+            normal_cap_limit_w=_with_default(
+                _optional_float(mapping, "normal_cap_limit_w"), 800.0
+            ),
+            hot_enter_t30_c=_with_default(
+                _optional_float(mapping, "hot_enter_t30_c"), 35.0
+            ),
+            hot_exit_t30_c=_with_default(
+                _optional_float(mapping, "hot_exit_t30_c"), 33.0
+            ),
+            hot_exit_hold_s=_with_default(
+                _optional_float(mapping, "hot_exit_hold_s"), 3600.0
+            ),
+            hot_min_soc_pct=_with_default(
+                _optional_float(mapping, "hot_min_soc_pct"), 15.0
+            ),
+            hot_max_soc_pct=_with_default(
+                _optional_float(mapping, "hot_max_soc_pct"), 90.0
+            ),
+            hot_cap_limit_w=_with_default(
+                _optional_float(mapping, "hot_cap_limit_w"), 800.0
+            ),
+            very_hot_enter_t30_c=_with_default(
+                _optional_float(mapping, "very_hot_enter_t30_c"), 40.0
+            ),
+            very_hot_enter_t5_c=_with_default(
+                _optional_float(mapping, "very_hot_enter_t5_c"), 45.0
+            ),
+            very_hot_exit_t30_c=_with_default(
+                _optional_float(mapping, "very_hot_exit_t30_c"), 38.0
+            ),
+            very_hot_exit_t5_c=_with_default(
+                _optional_float(mapping, "very_hot_exit_t5_c"), 43.0
+            ),
+            very_hot_exit_hold_s=_with_default(
+                _optional_float(mapping, "very_hot_exit_hold_s"), 3600.0
+            ),
+            very_hot_min_soc_pct=_with_default(
+                _optional_float(mapping, "very_hot_min_soc_pct"), 20.0
+            ),
+            very_hot_max_soc_pct=_with_default(
+                _optional_float(mapping, "very_hot_max_soc_pct"), 85.0
+            ),
+            very_hot_cap_limit_w=_with_default(
+                _optional_float(mapping, "very_hot_cap_limit_w"), 400.0
+            ),
+        )
+
+
+@dataclass(frozen=True)
 class SiteConfig:
     consumption: ConsumptionSiteConfig
     battery: ActuatorSiteConfig
@@ -274,6 +359,7 @@ class SiteConfig:
     battery_policy: BatteryPolicySiteConfig = field(
         default_factory=BatteryPolicySiteConfig
     )
+    thermal: ThermalSiteConfig = field(default_factory=ThermalSiteConfig)
     availability: AvailabilitySiteConfig = field(default_factory=AvailabilitySiteConfig)
     logging: LoggingSiteConfig = field(default_factory=LoggingSiteConfig)
     devices: dict[str, Any] = field(default_factory=dict)
@@ -304,6 +390,9 @@ class SiteConfig:
                 _optional_mapping(
                     mapping.get("battery_policy"), context="battery_policy"
                 )
+            ),
+            thermal=ThermalSiteConfig.from_mapping(
+                _optional_mapping(mapping.get("thermal"), context="thermal")
             ),
             availability=AvailabilitySiteConfig.from_mapping(
                 _optional_mapping(mapping.get("availability"), context="availability")
@@ -357,6 +446,13 @@ def site_config_to_appdaemon_args(site_config: SiteConfig) -> dict[str, Any]:
         "battery_discharge_limit_entity": (
             site_config.battery_sensors.discharge_limit_entity
         ),
+        "battery_charging_limit_entity": (
+            site_config.battery_sensors.charging_limit_entity
+        ),
+        "battery_heating_entity": site_config.battery_sensors.heating_entity,
+        "battery_high_temp_alarm_entity": (
+            site_config.battery_sensors.high_temp_alarm_entity
+        ),
         "baseline_load_w": site_config.control.baseline_load_w,
         "control_interval_s": site_config.control.control_interval_s,
         "consumption_ema_tau_s": site_config.control.consumption_ema_tau_s,
@@ -372,6 +468,23 @@ def site_config_to_appdaemon_args(site_config: SiteConfig) -> dict[str, Any]:
             site_config.battery_policy.soc_full_power_buffer_pct
         ),
         "soc_min_derate_factor": site_config.battery_policy.soc_min_derate_factor,
+        "thermal_normal_min_soc_pct": site_config.thermal.normal_min_soc_pct,
+        "thermal_normal_max_soc_pct": site_config.thermal.normal_max_soc_pct,
+        "thermal_normal_cap_limit_w": site_config.thermal.normal_cap_limit_w,
+        "thermal_hot_enter_t30_c": site_config.thermal.hot_enter_t30_c,
+        "thermal_hot_exit_t30_c": site_config.thermal.hot_exit_t30_c,
+        "thermal_hot_exit_hold_s": site_config.thermal.hot_exit_hold_s,
+        "thermal_hot_min_soc_pct": site_config.thermal.hot_min_soc_pct,
+        "thermal_hot_max_soc_pct": site_config.thermal.hot_max_soc_pct,
+        "thermal_hot_cap_limit_w": site_config.thermal.hot_cap_limit_w,
+        "thermal_very_hot_enter_t30_c": site_config.thermal.very_hot_enter_t30_c,
+        "thermal_very_hot_enter_t5_c": site_config.thermal.very_hot_enter_t5_c,
+        "thermal_very_hot_exit_t30_c": site_config.thermal.very_hot_exit_t30_c,
+        "thermal_very_hot_exit_t5_c": site_config.thermal.very_hot_exit_t5_c,
+        "thermal_very_hot_exit_hold_s": site_config.thermal.very_hot_exit_hold_s,
+        "thermal_very_hot_min_soc_pct": site_config.thermal.very_hot_min_soc_pct,
+        "thermal_very_hot_max_soc_pct": site_config.thermal.very_hot_max_soc_pct,
+        "thermal_very_hot_cap_limit_w": site_config.thermal.very_hot_cap_limit_w,
         "availability_warning_grace_s": site_config.availability.warning_grace_s,
         "availability_idle_output_threshold_w": (
             site_config.availability.idle_output_threshold_w
@@ -498,6 +611,25 @@ def controller_config_from_site_config(
         soc_min_derate_factor=site_config.battery_policy.soc_min_derate_factor,
         net_export_negative=site_config.control.net_export_negative,
         dry_run=dry_run,
+        thermal_policy=ThermalPolicyConfig(
+            normal_min_soc_pct=site_config.thermal.normal_min_soc_pct,
+            normal_max_soc_pct=site_config.thermal.normal_max_soc_pct,
+            normal_cap_limit_w=site_config.thermal.normal_cap_limit_w,
+            hot_enter_t30_c=site_config.thermal.hot_enter_t30_c,
+            hot_exit_t30_c=site_config.thermal.hot_exit_t30_c,
+            hot_exit_hold_s=site_config.thermal.hot_exit_hold_s,
+            hot_min_soc_pct=site_config.thermal.hot_min_soc_pct,
+            hot_max_soc_pct=site_config.thermal.hot_max_soc_pct,
+            hot_cap_limit_w=site_config.thermal.hot_cap_limit_w,
+            very_hot_enter_t30_c=site_config.thermal.very_hot_enter_t30_c,
+            very_hot_enter_t5_c=site_config.thermal.very_hot_enter_t5_c,
+            very_hot_exit_t30_c=site_config.thermal.very_hot_exit_t30_c,
+            very_hot_exit_t5_c=site_config.thermal.very_hot_exit_t5_c,
+            very_hot_exit_hold_s=site_config.thermal.very_hot_exit_hold_s,
+            very_hot_min_soc_pct=site_config.thermal.very_hot_min_soc_pct,
+            very_hot_max_soc_pct=site_config.thermal.very_hot_max_soc_pct,
+            very_hot_cap_limit_w=site_config.thermal.very_hot_cap_limit_w,
+        ),
     )
 
 

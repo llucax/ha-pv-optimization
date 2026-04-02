@@ -19,6 +19,8 @@ battery_sensors:
   soc_entity: sensor.noah_soc
   # temperature_entity: sensor.noah_bat0_temperature
   discharge_limit_entity: number.noah_discharge_limit
+  # charging_limit_entity: number.noah_charging_limit
+  # heating_entity: binary_sensor.noah_heating
 
 inverter:
   power_control_entity: number.ez1_output_power_limit
@@ -49,6 +51,25 @@ battery_policy:
   soc_stop_buffer_pct: 0
   soc_full_power_buffer_pct: 0
   soc_min_derate_factor: 1.0
+
+thermal:
+  normal_min_soc_pct: 15
+  normal_max_soc_pct: 95
+  normal_cap_limit_w: 800
+  hot_enter_t30_c: 35
+  hot_exit_t30_c: 33
+  hot_exit_hold_s: 3600
+  hot_min_soc_pct: 15
+  hot_max_soc_pct: 90
+  hot_cap_limit_w: 800
+  very_hot_enter_t30_c: 40
+  very_hot_enter_t5_c: 45
+  very_hot_exit_t30_c: 38
+  very_hot_exit_t5_c: 43
+  very_hot_exit_hold_s: 3600
+  very_hot_min_soc_pct: 20
+  very_hot_max_soc_pct: 85
+  very_hot_cap_limit_w: 400
 
 availability:
   warning_grace_s: 3600

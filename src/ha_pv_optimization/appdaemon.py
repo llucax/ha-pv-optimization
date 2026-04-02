@@ -16,6 +16,8 @@ from .models import (
     ControllerConfig,
     ControllerInputs,
     ControllerResult,
+    ThermalPolicyConfig,
+    ThermalState,
 )
 from .signals import TimeWeightedSeries
 
@@ -147,6 +149,9 @@ class EntityConfig:
     battery_temperature_entity: str | None
     battery_soc_entity: str | None
     battery_discharge_limit_entity: str | None
+    battery_charging_limit_entity: str | None
+    battery_heating_entity: str | None
+    battery_high_temp_alarm_entity: str | None
     primary_actuator: ActuatorEntityConfig
     trim_actuator: ActuatorEntityConfig | None
     debug_entity_prefix: str
@@ -201,6 +206,7 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             "battery": None,
             "inverter": None,
         }
+        self.last_reported_thermal_state: ThermalState | None = None
         self.last_control_summary = "state=initialized no-control-cycle-yet"
         self.missing_required_entities: tuple[str, ...] | None = None
         self.missing_required_since_monotonic: float | None = None
@@ -255,6 +261,15 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             battery_soc_entity=_as_non_empty_str(self.args.get("battery_soc_entity")),
             battery_discharge_limit_entity=_as_non_empty_str(
                 self.args.get("battery_discharge_limit_entity")
+            ),
+            battery_charging_limit_entity=_as_non_empty_str(
+                self.args.get("battery_charging_limit_entity")
+            ),
+            battery_heating_entity=_as_non_empty_str(
+                self.args.get("battery_heating_entity")
+            ),
+            battery_high_temp_alarm_entity=_as_non_empty_str(
+                self.args.get("battery_high_temp_alarm_entity")
             ),
             primary_actuator=battery_actuator,
             trim_actuator=self._build_actuator_entity_config(
@@ -365,6 +380,49 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             soc_min_derate_factor=self._get_float("soc_min_derate_factor", 0.25),
             net_export_negative=_as_bool(self.args.get("net_export_negative"), True),
             dry_run=_as_bool(self.args.get("dry_run"), True),
+            thermal_policy=ThermalPolicyConfig(
+                normal_min_soc_pct=self._get_float("thermal_normal_min_soc_pct", 15.0),
+                normal_max_soc_pct=self._get_float("thermal_normal_max_soc_pct", 95.0),
+                normal_cap_limit_w=self._get_float("thermal_normal_cap_limit_w", 800.0),
+                hot_enter_t30_c=self._get_float("thermal_hot_enter_t30_c", 35.0),
+                hot_exit_t30_c=self._get_float("thermal_hot_exit_t30_c", 33.0),
+                hot_exit_hold_s=self._get_float("thermal_hot_exit_hold_s", 3600.0),
+                hot_min_soc_pct=self._get_float("thermal_hot_min_soc_pct", 15.0),
+                hot_max_soc_pct=self._get_float("thermal_hot_max_soc_pct", 90.0),
+                hot_cap_limit_w=self._get_float("thermal_hot_cap_limit_w", 800.0),
+                very_hot_enter_t30_c=self._get_float(
+                    "thermal_very_hot_enter_t30_c",
+                    40.0,
+                ),
+                very_hot_enter_t5_c=self._get_float(
+                    "thermal_very_hot_enter_t5_c",
+                    45.0,
+                ),
+                very_hot_exit_t30_c=self._get_float(
+                    "thermal_very_hot_exit_t30_c",
+                    38.0,
+                ),
+                very_hot_exit_t5_c=self._get_float(
+                    "thermal_very_hot_exit_t5_c",
+                    43.0,
+                ),
+                very_hot_exit_hold_s=self._get_float(
+                    "thermal_very_hot_exit_hold_s",
+                    3600.0,
+                ),
+                very_hot_min_soc_pct=self._get_float(
+                    "thermal_very_hot_min_soc_pct",
+                    20.0,
+                ),
+                very_hot_max_soc_pct=self._get_float(
+                    "thermal_very_hot_max_soc_pct",
+                    85.0,
+                ),
+                very_hot_cap_limit_w=self._get_float(
+                    "thermal_very_hot_cap_limit_w",
+                    400.0,
+                ),
+            ),
         )
 
     def _build_actuator_config(
@@ -675,6 +733,16 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         discharge_limit_pct = self._read_entity_float(
             self.entities.battery_discharge_limit_entity
         )
+        charging_limit_pct = self._read_entity_float(
+            self.entities.battery_charging_limit_entity
+        )
+        battery_heating_active = self._read_entity_bool(
+            self.entities.battery_heating_entity
+        )
+        battery_high_temp_alarm_active = self._read_entity_bool(
+            self.entities.battery_high_temp_alarm_entity
+        )
+        tw_metrics = self._time_weighted_metrics(now)
 
         if self._handle_missing_required_state(
             consumption_w=consumption_w,
@@ -698,6 +766,11 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             ),
             soc_pct=soc_pct,
             discharge_limit_pct=discharge_limit_pct,
+            charging_limit_pct=charging_limit_pct,
+            battery_temp_t5_c=tw_metrics.battery_temp_t5_c,
+            battery_temp_t30_c=tw_metrics.battery_temp_t30_c,
+            battery_heating_active=battery_heating_active,
+            battery_high_temp_alarm_active=battery_high_temp_alarm_active,
         )
         result = self.controller.step(inputs)
         degraded_mode, degraded_reasons = self._effective_degraded_state(
@@ -705,6 +778,22 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             battery_inputs=primary_inputs,
             inverter_inputs=trim_inputs,
         )
+        min_soc_action, max_soc_action = self._apply_soc_rail_targets(
+            result=result,
+            current_discharge_limit_pct=discharge_limit_pct,
+            current_charging_limit_pct=charging_limit_pct,
+            thermal_state=result.thermal_state,
+        )
+
+        if result.thermal_state != self.last_reported_thermal_state:
+            self.log(
+                "Thermal state changed"
+                f" state={result.thermal_state}"
+                f" desired_min_soc={int(result.desired_min_soc_pct)}%"
+                f" desired_max_soc={int(result.desired_max_soc_pct)}%"
+                f" battery_cap_limit={int(result.battery_cap_limit_w)}W"
+            )
+            self.last_reported_thermal_state = result.thermal_state
 
         self._apply_actuator_result(
             entity_config=self.entities.primary_actuator,
@@ -739,9 +828,13 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         self._publish_result(
             result,
             inputs,
-            self._time_weighted_metrics(now),
+            tw_metrics,
             degraded_mode=degraded_mode,
             degraded_reasons=degraded_reasons,
+            current_discharge_limit_pct=discharge_limit_pct,
+            current_charging_limit_pct=charging_limit_pct,
+            min_soc_action=min_soc_action,
+            max_soc_action=max_soc_action,
         )
 
     def _heartbeat_tick(self, kwargs: dict[str, Any]) -> None:
@@ -762,6 +855,7 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             f" effective={effective_text}"
             f" battery_allowed={int(result.battery_allowed_max_output_w)}W"
             f" inverter_allowed={int(result.inverter_allowed_max_output_w)}W"
+            f" thermal={result.thermal_state}"
             f" current={int(result.current_limit_w)}W"
             f" degraded={degraded_mode}"
             f" battery={self._format_actuator_summary(result.primary_actuator)}"
@@ -850,6 +944,74 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             last_command_target_w=self.last_command_target_w["inverter"],
             last_command_observed_w=self.last_command_observed_w["inverter"],
         )
+
+    def _read_entity_bool(self, entity_id: str | None) -> bool:
+        if entity_id is None:
+            return False
+        value = self.get_state(entity_id)
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        lowered = str(value).strip().lower()
+        return lowered in {"on", "true", "yes", "1", "problem"}
+
+    def _apply_soc_rail_targets(
+        self,
+        *,
+        result: ControllerResult,
+        current_discharge_limit_pct: float | None,
+        current_charging_limit_pct: float | None,
+        thermal_state: ThermalState,
+    ) -> tuple[str, str]:
+        min_soc_action = self._apply_soc_rail_target(
+            entity_id=self.entities.battery_discharge_limit_entity,
+            desired_pct=result.desired_min_soc_pct,
+            current_pct=current_discharge_limit_pct,
+            label="min_soc",
+            thermal_state=thermal_state,
+        )
+        max_soc_action = self._apply_soc_rail_target(
+            entity_id=self.entities.battery_charging_limit_entity,
+            desired_pct=result.desired_max_soc_pct,
+            current_pct=current_charging_limit_pct,
+            label="max_soc",
+            thermal_state=thermal_state,
+        )
+        return min_soc_action, max_soc_action
+
+    def _apply_soc_rail_target(
+        self,
+        *,
+        entity_id: str | None,
+        desired_pct: float,
+        current_pct: float | None,
+        label: str,
+        thermal_state: ThermalState,
+    ) -> str:
+        if entity_id is None:
+            return "unconfigured"
+
+        desired_value = int(round(desired_pct))
+        if current_pct is not None and int(round(current_pct)) == desired_value:
+            return "aligned"
+
+        service = _default_power_control_service(entity_id)
+        if service is None:
+            return "unsupported"
+
+        if self.config.dry_run:
+            return "dry_run"
+
+        self.call_service(service, entity_id=entity_id, value=desired_value)
+        self.log(
+            f"Updated {label} rail"
+            f" entity={entity_id}"
+            f" target={desired_value}%"
+            f" current={None if current_pct is None else int(round(current_pct))}%"
+            f" thermal={thermal_state}"
+        )
+        return "write"
 
     def _apply_actuator_result(
         self,
@@ -1217,6 +1379,10 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         *,
         degraded_mode: str,
         degraded_reasons: tuple[str, ...],
+        current_discharge_limit_pct: float | None,
+        current_charging_limit_pct: float | None,
+        min_soc_action: str,
+        max_soc_action: str,
     ) -> None:
         state = "running"
         if self.config.dry_run:
@@ -1302,10 +1468,21 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             "battery_discharge_limit_entity": (
                 self.entities.battery_discharge_limit_entity
             ),
+            "battery_charging_limit_entity": (
+                self.entities.battery_charging_limit_entity
+            ),
+            "battery_heating_entity": self.entities.battery_heating_entity,
+            "battery_high_temp_alarm_entity": (
+                self.entities.battery_high_temp_alarm_entity
+            ),
             "action": result.action,
             "reason": result.reason,
             "degraded_mode": degraded_mode,
             "degraded_reasons": list(degraded_reasons),
+            "thermal_state": result.thermal_state,
+            "desired_min_soc_pct": round(result.desired_min_soc_pct, 1),
+            "desired_max_soc_pct": round(result.desired_max_soc_pct, 1),
+            "battery_cap_limit_w": round(result.battery_cap_limit_w, 1),
             "available_actuators": self._available_actuator_labels(
                 inputs.primary_actuator,
                 inputs.trim_actuator,
@@ -1454,9 +1631,16 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             "battery_temperature_t30_c": None
             if tw_metrics.battery_temp_t30_c is None
             else round(tw_metrics.battery_temp_t30_c, 1),
+            "battery_heating_active": inputs.battery_heating_active,
+            "battery_high_temp_alarm_active": inputs.battery_high_temp_alarm_active,
             "battery_discharge_limit_pct": None
-            if inputs.discharge_limit_pct is None
-            else round(inputs.discharge_limit_pct, 1),
+            if current_discharge_limit_pct is None
+            else round(current_discharge_limit_pct, 1),
+            "battery_charging_limit_pct": None
+            if current_charging_limit_pct is None
+            else round(current_charging_limit_pct, 1),
+            "battery_min_soc_action": min_soc_action,
+            "battery_max_soc_action": max_soc_action,
             "allowed_max_output_w": round(result.allowed_max_output_w, 1),
             "primary_allowed_max_output_w": round(
                 result.primary_allowed_max_output_w, 1

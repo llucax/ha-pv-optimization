@@ -286,12 +286,14 @@ def test_debug_target_entities_publish_zero_as_string() -> None:
         args={
             "consumption_entity": "sensor.load",
             "battery_power_control_entity": "number.battery_limit",
+            "battery_soc_entity": "sensor.battery_soc",
             "battery_power_step_w": 50,
             "battery_min_change_w": 50,
             "battery_min_write_interval_s": 0,
             "battery_max_increase_per_cycle_w": 500,
             "battery_max_decrease_per_cycle_w": 500,
             "battery_emergency_max_decrease_per_cycle_w": 500,
+            "thermal_normal_min_soc_pct": 25,
             "inverter_power_control_entity": "number.inverter_limit",
             "inverter_min_output_w": 30,
             "inverter_power_step_w": 10,
@@ -300,8 +302,6 @@ def test_debug_target_entities_publish_zero_as_string() -> None:
             "inverter_max_increase_per_cycle_w": 500,
             "inverter_max_decrease_per_cycle_w": 500,
             "inverter_emergency_max_decrease_per_cycle_w": 500,
-            "battery_soc_entity": "sensor.battery_soc",
-            "battery_discharge_limit_entity": "number.battery_reserve",
             "battery_max_output_w": 800,
             "inverter_max_output_w": 800,
             "dry_run": True,
@@ -314,7 +314,6 @@ def test_debug_target_entities_publish_zero_as_string() -> None:
             },
             "number.inverter_limit": "unavailable",
             "sensor.battery_soc": "22",
-            "number.battery_reserve": "20",
         },
     )
 
@@ -341,13 +340,13 @@ def test_status_reports_requested_translated_and_applied_targets() -> None:
             "consumption_entity": "sensor.load",
             "battery_power_control_entity": "number.battery_limit",
             "battery_soc_entity": "sensor.battery_soc",
-            "battery_discharge_limit_entity": "number.battery_reserve",
             "battery_power_step_w": 50,
             "battery_min_change_w": 50,
             "battery_min_write_interval_s": 999,
             "battery_max_increase_per_cycle_w": 500,
             "battery_max_decrease_per_cycle_w": 500,
             "battery_emergency_max_decrease_per_cycle_w": 500,
+            "thermal_normal_min_soc_pct": 25,
             "inverter_power_control_entity": "number.inverter_limit",
             "inverter_power_step_w": 25,
             "inverter_min_change_w": 25,
@@ -370,7 +369,6 @@ def test_status_reports_requested_translated_and_applied_targets() -> None:
                 "attributes": {"min": 30, "max": 800, "step": 25},
             },
             "sensor.battery_soc": "22",
-            "number.battery_reserve": "20",
         },
     )
 
@@ -659,3 +657,63 @@ def test_status_reports_external_override_after_command_grace(monkeypatch: Any) 
     )
     assert status_update[2]["battery_command_mismatch_w"] == 100.0
     assert "battery_probable_external_override" in status_update[2]["degraded_reasons"]
+
+
+def test_thermal_policy_writes_soc_rails() -> None:
+    app = FakeHaPvOptimization(
+        args={
+            "consumption_entity": "sensor.load",
+            "battery_power_control_entity": "number.battery_limit",
+            "battery_temperature_entity": "sensor.battery_temp",
+            "battery_discharge_limit_entity": "number.discharge_limit",
+            "battery_charging_limit_entity": "number.charging_limit",
+            "battery_max_output_w": 800,
+            "battery_power_step_w": 50,
+            "battery_min_change_w": 50,
+            "battery_min_write_interval_s": 0,
+            "battery_max_increase_per_cycle_w": 500,
+            "battery_max_decrease_per_cycle_w": 500,
+            "battery_emergency_max_decrease_per_cycle_w": 500,
+            "thermal_hot_enter_t30_c": 35,
+            "thermal_hot_exit_t30_c": 33,
+            "thermal_hot_exit_hold_s": 60,
+            "thermal_hot_min_soc_pct": 15,
+            "thermal_hot_max_soc_pct": 90,
+            "thermal_hot_cap_limit_w": 800,
+            "dry_run": False,
+        },
+        state_map={
+            "sensor.load": "200",
+            "sensor.battery_temp": "36",
+            "number.battery_limit": {
+                "state": "100",
+                "attributes": {"min": 0, "max": 800, "step": 50},
+            },
+            "number.discharge_limit": {
+                "state": "10",
+                "attributes": {"min": 0, "max": 30, "step": 1},
+            },
+            "number.charging_limit": {
+                "state": "95",
+                "attributes": {"min": 70, "max": 100, "step": 1},
+            },
+        },
+    )
+
+    app.initialize()
+    app._control_tick({})
+
+    assert (
+        "number/set_value",
+        {"entity_id": "number.discharge_limit", "value": 15},
+    ) in app.service_calls
+    assert (
+        "number/set_value",
+        {"entity_id": "number.charging_limit", "value": 90},
+    ) in app.service_calls
+    status_update = _latest_status_update(app)
+    assert status_update[2]["thermal_state"] == "HOT"
+    assert status_update[2]["desired_min_soc_pct"] == 15.0
+    assert status_update[2]["desired_max_soc_pct"] == 90.0
+    assert status_update[2]["battery_min_soc_action"] == "write"
+    assert status_update[2]["battery_max_soc_action"] == "write"

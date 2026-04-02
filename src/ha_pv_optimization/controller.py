@@ -7,6 +7,8 @@ from .models import (
     ControllerConfig,
     ControllerInputs,
     ControllerResult,
+    ThermalPolicyConfig,
+    ThermalState,
 )
 from .signals import clamp, ema, quantize_down, tau_to_alpha
 
@@ -16,6 +18,8 @@ class PowerControllerCore:
         self.config = config
         self.smoothed_consumption_w: float | None = None
         self.smoothed_net_consumption_w: float | None = None
+        self.thermal_state = ThermalState.NORMAL
+        self.thermal_clear_elapsed_s = 0.0
 
     def step(self, inputs: ControllerInputs) -> ControllerResult:
         effective_consumption_w = max(
@@ -78,7 +82,16 @@ class PowerControllerCore:
             requested_target_w = 0.0
             reason_parts.append("low_demand_zero")
 
-        battery_allowed_max_output_w = self._allowed_battery_output_w(inputs)
+        thermal_state = self._update_thermal_state(inputs)
+        desired_min_soc_pct, desired_max_soc_pct, battery_cap_limit_w = (
+            self._thermal_limits(thermal_state)
+        )
+
+        battery_allowed_max_output_w = self._allowed_battery_output_w(
+            inputs,
+            battery_cap_limit_w=battery_cap_limit_w,
+            desired_min_soc_pct=desired_min_soc_pct,
+        )
         inverter_allowed_max_output_w = self._allowed_inverter_output_w(inputs)
         allowed_path_cap_w = self._allowed_path_cap_w(
             inputs=inputs,
@@ -135,6 +148,10 @@ class PowerControllerCore:
             effective_target_w=effective_target_w,
             degraded_mode=degraded_mode,
             degraded_reasons=degraded_reasons,
+            thermal_state=thermal_state,
+            desired_min_soc_pct=desired_min_soc_pct,
+            desired_max_soc_pct=desired_max_soc_pct,
+            battery_cap_limit_w=battery_cap_limit_w,
             effective_consumption_w=effective_consumption_w,
             smoothed_consumption_w=self.smoothed_consumption_w,
             raw_net_consumption_w=raw_net_w,
@@ -173,31 +190,26 @@ class PowerControllerCore:
             )
         return self.config.battery_actuator.max_output_w
 
-    def _allowed_battery_output_w(self, inputs: ControllerInputs) -> float:
+    def _allowed_battery_output_w(
+        self,
+        inputs: ControllerInputs,
+        *,
+        battery_cap_limit_w: float,
+        desired_min_soc_pct: float,
+    ) -> float:
         if inputs.battery_actuator is None:
             return 0.0
 
-        allowed_max_output_w = self.config.battery_actuator.max_output_w
-        if inputs.soc_pct is None or inputs.discharge_limit_pct is None:
+        allowed_max_output_w = min(
+            self.config.battery_actuator.max_output_w,
+            battery_cap_limit_w,
+        )
+        if inputs.soc_pct is None:
             return allowed_max_output_w
 
-        reserve_stop = inputs.discharge_limit_pct + self.config.soc_stop_buffer_pct
-        reserve_full = (
-            inputs.discharge_limit_pct + self.config.soc_full_power_buffer_pct
-        )
-        if inputs.soc_pct <= reserve_stop:
+        if inputs.soc_pct <= desired_min_soc_pct:
             return 0.0
-        if inputs.soc_pct >= reserve_full:
-            return allowed_max_output_w
-
-        span = max(0.1, reserve_full - reserve_stop)
-        ratio = (inputs.soc_pct - reserve_stop) / span
-        derate = self.config.soc_min_derate_factor + (
-            (1.0 - self.config.soc_min_derate_factor) * ratio
-        )
-        return min(
-            allowed_max_output_w, self.config.battery_actuator.max_output_w * derate
-        )
+        return allowed_max_output_w
 
     def _allowed_inverter_output_w(self, inputs: ControllerInputs) -> float:
         if self.config.inverter_actuator is None or inputs.inverter_actuator is None:
@@ -391,6 +403,119 @@ class PowerControllerCore:
             reasons.append("inverter_limited")
 
         return tuple(dict.fromkeys(reasons))
+
+    def _update_thermal_state(self, inputs: ControllerInputs) -> ThermalState:
+        policy = self.config.thermal_policy
+        interval_s = self.config.control_interval_s
+        requested_state = self.thermal_state
+
+        if self._very_hot_triggered(inputs, policy):
+            self.thermal_state = ThermalState.VERY_HOT
+            self.thermal_clear_elapsed_s = 0.0
+            return self.thermal_state
+
+        if self.thermal_state == ThermalState.VERY_HOT:
+            if self._very_hot_clear(inputs, policy):
+                self.thermal_clear_elapsed_s += interval_s
+                if self.thermal_clear_elapsed_s >= policy.very_hot_exit_hold_s:
+                    requested_state = (
+                        ThermalState.HOT
+                        if self._hot_triggered(inputs, policy)
+                        else ThermalState.NORMAL
+                    )
+            else:
+                self.thermal_clear_elapsed_s = 0.0
+            self.thermal_state = requested_state
+            return self.thermal_state
+
+        if self._hot_triggered(inputs, policy):
+            self.thermal_state = ThermalState.HOT
+            self.thermal_clear_elapsed_s = 0.0
+            return self.thermal_state
+
+        if self.thermal_state == ThermalState.HOT:
+            if self._hot_clear(inputs, policy):
+                self.thermal_clear_elapsed_s += interval_s
+                if self.thermal_clear_elapsed_s >= policy.hot_exit_hold_s:
+                    self.thermal_state = ThermalState.NORMAL
+            else:
+                self.thermal_clear_elapsed_s = 0.0
+
+        return self.thermal_state
+
+    def _very_hot_triggered(
+        self,
+        inputs: ControllerInputs,
+        policy: ThermalPolicyConfig,
+    ) -> bool:
+        return bool(
+            inputs.battery_high_temp_alarm_active
+            or (
+                inputs.battery_temp_t30_c is not None
+                and inputs.battery_temp_t30_c >= policy.very_hot_enter_t30_c
+            )
+            or (
+                inputs.battery_temp_t5_c is not None
+                and inputs.battery_temp_t5_c >= policy.very_hot_enter_t5_c
+            )
+        )
+
+    def _very_hot_clear(
+        self,
+        inputs: ControllerInputs,
+        policy: ThermalPolicyConfig,
+    ) -> bool:
+        if inputs.battery_high_temp_alarm_active:
+            return False
+        return bool(
+            inputs.battery_temp_t30_c is not None
+            and inputs.battery_temp_t30_c < policy.very_hot_exit_t30_c
+            and inputs.battery_temp_t5_c is not None
+            and inputs.battery_temp_t5_c < policy.very_hot_exit_t5_c
+        )
+
+    def _hot_triggered(
+        self,
+        inputs: ControllerInputs,
+        policy: ThermalPolicyConfig,
+    ) -> bool:
+        return bool(
+            inputs.battery_temp_t30_c is not None
+            and inputs.battery_temp_t30_c >= policy.hot_enter_t30_c
+        )
+
+    def _hot_clear(
+        self,
+        inputs: ControllerInputs,
+        policy: ThermalPolicyConfig,
+    ) -> bool:
+        return bool(
+            inputs.battery_temp_t30_c is not None
+            and inputs.battery_temp_t30_c < policy.hot_exit_t30_c
+        )
+
+    def _thermal_limits(
+        self,
+        state: ThermalState,
+    ) -> tuple[float, float, float]:
+        policy = self.config.thermal_policy
+        if state == ThermalState.HOT:
+            return (
+                policy.hot_min_soc_pct,
+                policy.hot_max_soc_pct,
+                policy.hot_cap_limit_w,
+            )
+        if state == ThermalState.VERY_HOT:
+            return (
+                policy.very_hot_min_soc_pct,
+                policy.very_hot_max_soc_pct,
+                policy.very_hot_cap_limit_w,
+            )
+        return (
+            policy.normal_min_soc_pct,
+            policy.normal_max_soc_pct,
+            policy.normal_cap_limit_w,
+        )
 
     def _representative_current_limit(self, inputs: ControllerInputs) -> float:
         current_limits = [

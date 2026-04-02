@@ -90,10 +90,11 @@ It includes:
 
 - `consumption` - visible-load entity mapping
 - `battery` - battery actuator entity mapping and constraints
-- `battery_sensors` - SOC, temperature, and discharge-limit entities
+- `battery_sensors` - SOC, temperature, min/max-SOC rail, and optional heating/alarm entities
 - `inverter` - inverter actuator entity mapping and constraints
 - `control` - controller tuning values
 - `battery_policy` - current battery-side reserve/derate policy values
+- `thermal` - thermal-state thresholds and the desired SOC/cap outputs for `NORMAL`, `HOT`, and `VERY_HOT`
 - `availability` - expected-missing warning tuning
 - `logging` - debug entity prefix and optional cycle-log routing
 

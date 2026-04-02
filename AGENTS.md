@@ -131,6 +131,7 @@ uv run pytest
 - Preserve `dry_run` semantics for safe rollout.
 - If you add a new control input or config key, thread it through config docs, assumptions, examples, and tests.
 - Treat the topology as `PV -DC-> battery -DC-> inverter -AC-> house`, with battery and inverter acting as two gates on the same output path rather than additive outputs.
+- When editing Stage 6 thermal behavior, keep the thermal state machine and rail targets aligned with the site-config thermal section and the NOAH charging/discharge-limit entities.
 
 ## Testing guidance
 - Prefer deterministic unit tests with explicit numeric expectations.
