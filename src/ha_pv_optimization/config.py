@@ -379,12 +379,16 @@ class DeviceModelSiteConfig:
     kind: DeviceModelKind
     entity_id: str
     enabled: bool = True
+    included_in_total_template: bool = False
+    used_for_feed_forward: bool = True
+    used_for_baseline_overlay: bool = False
     low_threshold_w: float | None = None
     high_threshold_w: float = 300.0
     enter_persistence_s: float = 2.0
     exit_persistence_s: float = 2.0
     ff_gain: float = 0.9
     ff_hold_s: float = 60.0
+    reference_power_w: float | None = None
 
     @classmethod
     def from_mapping(
@@ -398,11 +402,29 @@ class DeviceModelSiteConfig:
         except ValueError as exc:
             raise ValueError(f"Invalid devices.{name}.kind: {kind_text}") from exc
         enabled = _optional_bool(mapping, "enabled")
+        included_in_total_template = _optional_bool(
+            mapping,
+            "included_in_total_template",
+        )
+        used_for_feed_forward = _optional_bool(mapping, "used_for_feed_forward")
+        used_for_baseline_overlay = _optional_bool(
+            mapping,
+            "used_for_baseline_overlay",
+        )
         return cls(
             name=name,
             kind=kind,
             entity_id=_required_str(mapping, "entity_id", context=f"devices.{name}"),
             enabled=True if enabled is None else enabled,
+            included_in_total_template=False
+            if included_in_total_template is None
+            else included_in_total_template,
+            used_for_feed_forward=True
+            if used_for_feed_forward is None
+            else used_for_feed_forward,
+            used_for_baseline_overlay=False
+            if used_for_baseline_overlay is None
+            else used_for_baseline_overlay,
             low_threshold_w=_optional_float(mapping, "low_threshold_w"),
             high_threshold_w=_with_default(
                 _optional_float(mapping, "high_threshold_w"),
@@ -418,6 +440,7 @@ class DeviceModelSiteConfig:
             ),
             ff_gain=_with_default(_optional_float(mapping, "ff_gain"), 0.9),
             ff_hold_s=_with_default(_optional_float(mapping, "ff_hold_s"), 60.0),
+            reference_power_w=_optional_float(mapping, "reference_power_w"),
         )
 
     def to_runtime_config(self) -> DeviceModelConfig:
@@ -426,12 +449,16 @@ class DeviceModelSiteConfig:
             kind=self.kind,
             entity_id=self.entity_id,
             enabled=self.enabled,
+            included_in_total_template=self.included_in_total_template,
+            used_for_feed_forward=self.used_for_feed_forward,
+            used_for_baseline_overlay=self.used_for_baseline_overlay,
             low_threshold_w=self.low_threshold_w,
             high_threshold_w=self.high_threshold_w,
             enter_persistence_s=self.enter_persistence_s,
             exit_persistence_s=self.exit_persistence_s,
             ff_gain=self.ff_gain,
             ff_hold_s=self.ff_hold_s,
+            reference_power_w=self.reference_power_w,
         )
 
 

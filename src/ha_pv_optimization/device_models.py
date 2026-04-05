@@ -9,6 +9,9 @@ class DeviceModelKind(StrEnum):
     BURST_HIGH_POWER = "burst_high_power"
     CYCLIC_HEATER = "cyclic_heater"
     COMPOSITE_KITCHEN_OUTLET = "composite_kitchen_outlet"
+    THERMOSTATIC_COMPRESSOR = "thermostatic_compressor"
+    SESSION_BASELINE = "session_baseline"
+    CONSTANT_BASELINE = "constant_baseline"
 
 
 class DeviceRunState(StrEnum):
@@ -23,12 +26,16 @@ class DeviceModelConfig:
     kind: DeviceModelKind
     entity_id: str
     enabled: bool = True
+    included_in_total_template: bool = False
+    used_for_feed_forward: bool = True
+    used_for_baseline_overlay: bool = False
     low_threshold_w: float | None = None
     high_threshold_w: float = 300.0
     enter_persistence_s: float = 2.0
     exit_persistence_s: float = 2.0
     ff_gain: float = 0.9
     ff_hold_s: float = 60.0
+    reference_power_w: float | None = None
 
 
 @dataclass(frozen=True)
@@ -39,6 +46,8 @@ class DeviceContribution:
     state: DeviceRunState
     power_w: float
     bias_w: float
+    transition_bias_w: float
+    baseline_overlay_w: float
     confidence: float
     active: bool
 
@@ -51,8 +60,8 @@ class DeviceModelRuntime:
     state: DeviceRunState = DeviceRunState.OFF
     pending_state: DeviceRunState | None = None
     pending_since: datetime | None = None
-    bias_w: float = 0.0
-    bias_until: datetime | None = None
+    transition_bias_w: float = 0.0
+    transition_bias_until: datetime | None = None
 
     def update_sample(self, timestamp: datetime, power_w: float) -> None:
         self.current_power_w = power_w
@@ -76,20 +85,24 @@ class DeviceModelRuntime:
                     self.pending_since = None
                     self._apply_transition(previous_state=previous_state, now=now)
 
-        if self.bias_until is not None and now >= self.bias_until:
-            self.bias_w = 0.0
-            self.bias_until = None
+        if self.transition_bias_until is not None and now >= self.transition_bias_until:
+            self.transition_bias_w = 0.0
+            self.transition_bias_until = None
 
     def contribution(self, now: datetime) -> DeviceContribution:
         self.advance(now)
-        active = self.bias_w > 0.0
+        baseline_overlay_w = self._baseline_overlay_w()
+        bias_w = self.transition_bias_w + baseline_overlay_w
+        active = bias_w > 0.0
         return DeviceContribution(
             name=self.config.name,
             entity_id=self.config.entity_id,
             kind=self.config.kind,
             state=self.state,
             power_w=self.current_power_w,
-            bias_w=self.bias_w,
+            bias_w=bias_w,
+            transition_bias_w=self.transition_bias_w,
+            baseline_overlay_w=baseline_overlay_w,
             confidence=1.0 if active else 0.0,
             active=active,
         )
@@ -101,6 +114,24 @@ class DeviceModelRuntime:
             low_threshold_w = self.config.low_threshold_w or 0.0
             if self.current_power_w >= low_threshold_w:
                 return DeviceRunState.LOW
+            return DeviceRunState.OFF
+
+        if self.config.kind == DeviceModelKind.CONSTANT_BASELINE:
+            low_threshold_w = self.config.low_threshold_w or 0.0
+            if self.current_power_w >= low_threshold_w:
+                return DeviceRunState.LOW
+            return DeviceRunState.OFF
+
+        if self.config.kind == DeviceModelKind.SESSION_BASELINE:
+            threshold_w = self.config.high_threshold_w
+            if self.current_power_w >= threshold_w:
+                return DeviceRunState.HIGH
+            return DeviceRunState.OFF
+
+        if self.config.kind == DeviceModelKind.THERMOSTATIC_COMPRESSOR:
+            threshold_w = self.config.high_threshold_w
+            if self.current_power_w >= threshold_w:
+                return DeviceRunState.HIGH
             return DeviceRunState.OFF
 
         if self.current_power_w >= self.config.high_threshold_w:
@@ -119,13 +150,31 @@ class DeviceModelRuntime:
         now: datetime,
     ) -> None:
         if self.state == DeviceRunState.HIGH and previous_state != DeviceRunState.HIGH:
-            self.bias_w = self.current_power_w * self.config.ff_gain
-            self.bias_until = now + timedelta(seconds=self.config.ff_hold_s)
+            if self.config.used_for_feed_forward:
+                reference_power_w = self._reference_power_w()
+                self.transition_bias_w = reference_power_w * self.config.ff_gain
+                self.transition_bias_until = now + timedelta(
+                    seconds=self.config.ff_hold_s
+                )
             return
 
         if previous_state == DeviceRunState.HIGH and self.state != DeviceRunState.HIGH:
-            self.bias_w = 0.0
-            self.bias_until = None
+            self.transition_bias_w = 0.0
+            self.transition_bias_until = None
+
+    def _reference_power_w(self) -> float:
+        if self.config.reference_power_w is not None:
+            return self.config.reference_power_w
+        return self.current_power_w
+
+    def _baseline_overlay_w(self) -> float:
+        if not self.config.used_for_baseline_overlay:
+            return 0.0
+        if self.config.included_in_total_template:
+            return 0.0
+        if self.state == DeviceRunState.OFF:
+            return 0.0
+        return self._reference_power_w() * self.config.ff_gain
 
 
 class DeviceFeedForwardEngine:

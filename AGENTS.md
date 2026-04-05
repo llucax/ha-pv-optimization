@@ -137,6 +137,7 @@ uv run pytest
 - Treat the topology as `PV -DC-> battery -DC-> inverter -AC-> house`, with battery and inverter acting as two gates on the same output path rather than additive outputs.
 - When editing Stage 6 thermal behavior, keep the thermal state machine and rail targets aligned with the site-config thermal section and the NOAH charging/discharge-limit entities.
 - When editing Stage 7 feed-forward behavior, keep the typed `devices:` section, `device_models.py`, replay runner, and status/debug output aligned so the live controller and replay baseline exercise the same device set.
+- When expanding the device layer, document new `kind` values and inclusion flags (`included_in_total_template`, `used_for_feed_forward`, `used_for_baseline_overlay`) so replay and site config semantics stay aligned.
 
 ## Testing guidance
 - Prefer deterministic unit tests with explicit numeric expectations.

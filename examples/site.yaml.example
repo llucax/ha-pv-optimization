@@ -104,6 +104,7 @@ devices:
     kind: burst_high_power
     entity_id: sensor.outlet_microwave_power
     enabled: true
+    included_in_total_template: true
     high_threshold_w: 300
     enter_persistence_s: 2
     exit_persistence_s: 2
@@ -114,6 +115,7 @@ devices:
     kind: composite_kitchen_outlet
     entity_id: sensor.outlet_under_cabinet_appliances_power
     enabled: true
+    included_in_total_template: true
     high_threshold_w: 300
     enter_persistence_s: 2
     exit_persistence_s: 2
@@ -124,6 +126,7 @@ devices:
     kind: cyclic_heater
     entity_id: sensor.outlet_oven_power
     enabled: true
+    included_in_total_template: true
     low_threshold_w: 20
     high_threshold_w: 500
     enter_persistence_s: 2
@@ -135,9 +138,152 @@ devices:
     kind: cyclic_heater
     entity_id: sensor.outlet_dishwasher_power
     enabled: true
+    included_in_total_template: true
     low_threshold_w: 20
     high_threshold_w: 500
     enter_persistence_s: 3
     exit_persistence_s: 3
     ff_gain: 0.90
     ff_hold_s: 120
+
+  fridge:
+    kind: thermostatic_compressor
+    entity_id: sensor.outlet_fridge_power
+    enabled: true
+    included_in_total_template: true
+    high_threshold_w: 50
+    enter_persistence_s: 5
+    exit_persistence_s: 5
+    ff_gain: 0.25
+    ff_hold_s: 60
+    reference_power_w: 100
+
+  freezer:
+    kind: thermostatic_compressor
+    entity_id: sensor.outlet_freezer_power
+    enabled: true
+    included_in_total_template: true
+    high_threshold_w: 50
+    enter_persistence_s: 5
+    exit_persistence_s: 5
+    ff_gain: 0.25
+    ff_hold_s: 60
+    reference_power_w: 88
+
+  dehumidifier:
+    kind: thermostatic_compressor
+    entity_id: sensor.outlet_dehumidifier_power
+    enabled: true
+    included_in_total_template: true
+    high_threshold_w: 80
+    enter_persistence_s: 10
+    exit_persistence_s: 10
+    ff_gain: 0.20
+    ff_hold_s: 90
+    reference_power_w: 140
+
+  desk_lena:
+    kind: session_baseline
+    entity_id: sensor.outlet_desk_lena_power
+    enabled: true
+    included_in_total_template: true
+    high_threshold_w: 30
+    enter_persistence_s: 15
+    exit_persistence_s: 30
+    used_for_feed_forward: true
+    used_for_baseline_overlay: false
+    ff_gain: 0.20
+    ff_hold_s: 120
+    reference_power_w: 80
+
+  desk_luca:
+    kind: session_baseline
+    entity_id: sensor.outlet_desk_luca_power
+    enabled: true
+    included_in_total_template: true
+    high_threshold_w: 30
+    enter_persistence_s: 15
+    exit_persistence_s: 30
+    used_for_feed_forward: true
+    used_for_baseline_overlay: false
+    ff_gain: 0.20
+    ff_hold_s: 120
+    reference_power_w: 80
+
+  media_center:
+    kind: session_baseline
+    entity_id: sensor.outlet_media_center_power
+    enabled: true
+    included_in_total_template: true
+    high_threshold_w: 30
+    enter_persistence_s: 15
+    exit_persistence_s: 30
+    used_for_feed_forward: true
+    used_for_baseline_overlay: false
+    ff_gain: 0.20
+    ff_hold_s: 120
+    reference_power_w: 90
+
+  chargers_living:
+    kind: session_baseline
+    entity_id: sensor.outlet_chargers_living_power
+    enabled: true
+    included_in_total_template: true
+    high_threshold_w: 20
+    enter_persistence_s: 15
+    exit_persistence_s: 30
+    used_for_feed_forward: true
+    used_for_baseline_overlay: false
+    ff_gain: 0.20
+    ff_hold_s: 90
+    reference_power_w: 60
+
+  living_hall:
+    kind: session_baseline
+    entity_id: sensor.outlet_living_hall_power
+    enabled: true
+    included_in_total_template: true
+    high_threshold_w: 20
+    enter_persistence_s: 15
+    exit_persistence_s: 30
+    used_for_feed_forward: true
+    used_for_baseline_overlay: false
+    ff_gain: 0.20
+    ff_hold_s: 90
+    reference_power_w: 100
+
+  schimmeldry:
+    kind: session_baseline
+    entity_id: sensor.outlet_schimmeldry_power
+    enabled: true
+    included_in_total_template: true
+    high_threshold_w: 50
+    enter_persistence_s: 15
+    exit_persistence_s: 30
+    used_for_feed_forward: true
+    used_for_baseline_overlay: false
+    ff_gain: 0.15
+    ff_hold_s: 120
+    reference_power_w: 100
+
+  ap_switch_chargers:
+    kind: constant_baseline
+    entity_id: sensor.outlet_ap_switch_chargers_power
+    enabled: true
+    included_in_total_template: true
+    used_for_feed_forward: false
+    used_for_baseline_overlay: true
+    low_threshold_w: 1
+    ff_gain: 1.0
+    reference_power_w: 10
+
+  fritzbox_printer_rock64:
+    kind: constant_baseline
+    entity_id: sensor.outlet_fritzbox_printer_rock64_power
+    enabled: true
+    included_in_total_template: true
+    used_for_feed_forward: false
+    used_for_baseline_overlay: true
+    low_threshold_w: 1
+    ff_gain: 1.0
+    reference_power_w: 15

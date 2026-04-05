@@ -91,3 +91,87 @@ def test_cyclic_heater_only_biases_high_state() -> None:
     )
     assert total_bias_w == 0.0
     assert contributions[0].state == DeviceRunState.LOW
+
+
+def test_session_baseline_emits_transition_bias_but_no_overlay_when_in_total() -> None:
+    start = datetime(2026, 3, 28, 6, 0, tzinfo=UTC)
+    engine = DeviceFeedForwardEngine.from_configs(
+        {
+            "desk": DeviceModelConfig(
+                name="desk",
+                kind=DeviceModelKind.SESSION_BASELINE,
+                entity_id="sensor.outlet_desk_power",
+                included_in_total_template=True,
+                used_for_feed_forward=True,
+                used_for_baseline_overlay=True,
+                high_threshold_w=30.0,
+                enter_persistence_s=0.0,
+                ff_gain=0.25,
+                ff_hold_s=120.0,
+                reference_power_w=80.0,
+            )
+        }
+    )
+
+    engine.update_sample("desk", start, 60.0)
+    total_bias_w, contributions = engine.contribution_snapshot(start)
+
+    assert total_bias_w == 20.0
+    assert contributions[0].transition_bias_w == 20.0
+    assert contributions[0].baseline_overlay_w == 0.0
+    assert contributions[0].state == DeviceRunState.HIGH
+
+
+def test_constant_baseline_emits_no_overlay_when_in_total() -> None:
+    start = datetime(2026, 3, 28, 6, 0, tzinfo=UTC)
+    engine = DeviceFeedForwardEngine.from_configs(
+        {
+            "router": DeviceModelConfig(
+                name="router",
+                kind=DeviceModelKind.CONSTANT_BASELINE,
+                entity_id="sensor.outlet_router_power",
+                included_in_total_template=True,
+                used_for_feed_forward=False,
+                used_for_baseline_overlay=True,
+                low_threshold_w=1.0,
+                ff_gain=1.0,
+                reference_power_w=15.0,
+            )
+        }
+    )
+
+    engine.update_sample("router", start, 15.0)
+    total_bias_w, contributions = engine.contribution_snapshot(
+        start + timedelta(seconds=10)
+    )
+
+    assert total_bias_w == 0.0
+    assert contributions[0].baseline_overlay_w == 0.0
+    assert contributions[0].state == DeviceRunState.LOW
+
+
+def test_thermostatic_compressor_uses_reference_power_transition_bias() -> None:
+    start = datetime(2026, 3, 28, 6, 0, tzinfo=UTC)
+    engine = DeviceFeedForwardEngine.from_configs(
+        {
+            "fridge": DeviceModelConfig(
+                name="fridge",
+                kind=DeviceModelKind.THERMOSTATIC_COMPRESSOR,
+                entity_id="sensor.outlet_fridge_power",
+                included_in_total_template=True,
+                high_threshold_w=50.0,
+                enter_persistence_s=0.0,
+                exit_persistence_s=5.0,
+                ff_gain=0.25,
+                ff_hold_s=60.0,
+                reference_power_w=100.0,
+            )
+        }
+    )
+
+    engine.update_sample("fridge", start, 95.0)
+    total_bias_w, contributions = engine.contribution_snapshot(start)
+
+    assert total_bias_w == 25.0
+    assert contributions[0].transition_bias_w == 25.0
+    assert contributions[0].state == DeviceRunState.HIGH

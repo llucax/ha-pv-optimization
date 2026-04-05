@@ -162,21 +162,39 @@ Each device entry supports:
   - `burst_high_power`
   - `cyclic_heater`
   - `composite_kitchen_outlet`
+  - `thermostatic_compressor`
+  - `session_baseline`
+  - `constant_baseline`
 - `entity_id` - Home Assistant power entity for that device or outlet
 - `enabled` - whether the device model is active
+- `included_in_total_template` - whether the device is already included in the aggregate `sensor.total_consumption_power` template
+- `used_for_feed_forward` - whether the device may add a temporary transition bias
+- `used_for_baseline_overlay` - whether the device may add an ongoing baseline-style overlay when it is not already in the total template
 - `low_threshold_w` - optional low threshold used by `cyclic_heater`
 - `high_threshold_w` - threshold for the high-power state
 - `enter_persistence_s` - seconds required before entering the active state
 - `exit_persistence_s` - seconds required before leaving the active state
 - `ff_gain` - multiplier applied to the observed device power when the transition bias activates
 - `ff_hold_s` - how long the temporary feed-forward bias stays active after a high-power transition
+- `reference_power_w` - optional fixed reference power used instead of the latest observed power
 
-For this site, the current feed-forward device set enables:
+For this site, the current expanded device set includes:
 
-- microwave
-- under-cabinet appliances (composite outlet)
-- oven
-- dishwasher
+- transition-bias models:
+  - microwave
+  - under-cabinet appliances (composite outlet)
+  - oven
+  - dishwasher
+  - fridge
+  - freezer
+  - dehumidifier compressor/fan composite
+  - desk/session loads
+- baseline-overlay-capable models:
+  - desk/session loads
+  - AP/switch chargers
+  - fritzbox/printer/rock64
+
+When `included_in_total_template` is `true`, ongoing baseline overlay is suppressed to avoid obvious double-counting. Transition bias can still be enabled as a predictive nudge when that is considered useful for the site.
 
 The controller publishes these device-feed-forward diagnostics in the status entity:
 
