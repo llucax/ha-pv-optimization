@@ -91,6 +91,18 @@ thermal:
   very_hot_max_soc_pct: 85
   very_hot_cap_limit_w: 400
 
+maintenance:
+  enabled: true
+  storage_path: /conf/var/noah_controller.sqlite3
+  full_charge_threshold_pct: 99
+  full_charge_hold_s: 1800
+  max_age_days: 30
+  start_min_t30_c: 10
+  start_max_t30_c: 35
+  maintenance_min_soc_pct: 15
+  maintenance_max_soc_pct: 100
+  maintenance_path_cap_w: 0
+
 availability:
   warning_grace_s: 3600
 

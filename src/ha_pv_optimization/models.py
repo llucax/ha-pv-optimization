@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import StrEnum
 
 
@@ -29,6 +30,26 @@ class ThermalPolicyConfig:
     very_hot_min_soc_pct: float = 20.0
     very_hot_max_soc_pct: float = 85.0
     very_hot_cap_limit_w: float = 400.0
+
+
+@dataclass(frozen=True)
+class MaintenancePolicyConfig:
+    enabled: bool = True
+    full_charge_threshold_pct: float = 99.0
+    full_charge_hold_s: float = 1800.0
+    max_age_days: float = 30.0
+    start_min_t30_c: float = 10.0
+    start_max_t30_c: float = 35.0
+    maintenance_min_soc_pct: float = 15.0
+    maintenance_max_soc_pct: float = 100.0
+    maintenance_path_cap_w: float = 0.0
+
+
+@dataclass(frozen=True)
+class MaintenanceStateSnapshot:
+    maintenance_active: bool
+    full_charge_elapsed_s: float
+    last_full_charge_at: datetime | None
 
 
 @dataclass(frozen=True)
@@ -63,6 +84,9 @@ class ControllerConfig:
     net_export_negative: bool = True
     dry_run: bool = False
     thermal_policy: ThermalPolicyConfig = field(default_factory=ThermalPolicyConfig)
+    maintenance_policy: MaintenancePolicyConfig = field(
+        default_factory=MaintenancePolicyConfig
+    )
     command_step_w: float = 10.0
     command_lockout_s: float = 12.0
     slow_up_deadband_w: float = 80.0
@@ -122,6 +146,7 @@ class ControllerInputs:
     battery_heating_active: bool = False
     battery_high_temp_alarm_active: bool = False
     device_feed_forward_w: float = 0.0
+    timestamp: datetime | None = None
 
     @property
     def battery_actuator(self) -> ActuatorInputs | None:
@@ -159,6 +184,11 @@ class ControllerResult:
     degraded_reasons: tuple[str, ...]
     thermal_state: ThermalState
     thermal_reason: str
+    maintenance_active: bool
+    maintenance_due: bool
+    maintenance_reason: str
+    maintenance_full_charge_elapsed_s: float
+    last_full_charge_at: datetime | None
     desired_min_soc_pct: float
     desired_max_soc_pct: float
     battery_cap_limit_w: float

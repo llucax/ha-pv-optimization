@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -9,7 +10,13 @@ from ha_pv_optimization.appdaemon import HaPvOptimization
 
 class FakeHaPvOptimization(HaPvOptimization):
     def __init__(self, args: dict[str, Any], state_map: dict[str, Any]) -> None:
-        self.args = args
+        self.temp_dir = Path(tempfile.mkdtemp(prefix="ha-pvopt-test-"))
+        effective_args = dict(args)
+        effective_args.setdefault(
+            "maintenance_storage_path",
+            str(self.temp_dir / "noah_controller.sqlite3"),
+        )
+        self.args = effective_args
         self.state_map = state_map
         self.logs: list[tuple[str, str, dict[str, Any]]] = []
         self.state_updates: list[tuple[str, Any, dict[str, Any]]] = []
@@ -945,3 +952,121 @@ def test_thermal_heartbeat_can_use_dedicated_logger() -> None:
 
     thermal_messages = _messages_for_log(app, log_name="thermal_log")
     assert any("Thermal heartbeat" in message for message in thermal_messages)
+
+
+def test_maintenance_state_is_persisted(tmp_path: Path) -> None:
+    db_path = tmp_path / "var" / "maintenance.sqlite3"
+    app = FakeHaPvOptimization(
+        args={
+            "consumption_entity": "sensor.load",
+            "battery_power_control_entity": "number.battery_limit",
+            "battery_temperature_entity": "sensor.battery_temp",
+            "battery_charging_limit_entity": "number.charging_limit",
+            "battery_discharge_limit_entity": "number.discharge_limit",
+            "battery_max_output_w": 800,
+            "maintenance_storage_path": str(db_path),
+            "maintenance_full_charge_threshold_pct": 99,
+            "maintenance_full_charge_hold_s": 1800,
+            "maintenance_max_age_days": 30,
+            "maintenance_start_min_t30_c": 10,
+            "maintenance_start_max_t30_c": 35,
+            "maintenance_max_soc_pct": 100,
+            "maintenance_path_cap_w": 0,
+            "dry_run": True,
+        },
+        state_map={
+            "sensor.load": "200",
+            "sensor.battery_temp": "20",
+            "number.battery_limit": {
+                "state": "0",
+                "attributes": {"min": 0, "max": 800, "step": 50},
+            },
+            "number.discharge_limit": {
+                "state": "15",
+                "attributes": {"min": 0, "max": 30, "step": 1},
+            },
+            "number.charging_limit": {
+                "state": "95",
+                "attributes": {"min": 70, "max": 100, "step": 1},
+            },
+        },
+    )
+
+    app.initialize()
+    app._control_tick({})
+
+    reloaded_app = FakeHaPvOptimization(
+        args={
+            "consumption_entity": "sensor.load",
+            "battery_power_control_entity": "number.battery_limit",
+            "battery_temperature_entity": "sensor.battery_temp",
+            "battery_charging_limit_entity": "number.charging_limit",
+            "battery_discharge_limit_entity": "number.discharge_limit",
+            "battery_max_output_w": 800,
+            "maintenance_storage_path": str(db_path),
+            "dry_run": True,
+        },
+        state_map={
+            "sensor.load": "200",
+            "sensor.battery_temp": "20",
+            "number.battery_limit": {
+                "state": "0",
+                "attributes": {"min": 0, "max": 800, "step": 50},
+            },
+            "number.discharge_limit": {
+                "state": "15",
+                "attributes": {"min": 0, "max": 30, "step": 1},
+            },
+            "number.charging_limit": {
+                "state": "95",
+                "attributes": {"min": 70, "max": 100, "step": 1},
+            },
+        },
+    )
+
+    reloaded_app.initialize()
+    assert reloaded_app.controller.maintenance_active is True
+
+
+def test_maintenance_status_fields_are_published() -> None:
+    app = FakeHaPvOptimization(
+        args={
+            "consumption_entity": "sensor.load",
+            "battery_power_control_entity": "number.battery_limit",
+            "battery_temperature_entity": "sensor.battery_temp",
+            "battery_charging_limit_entity": "number.charging_limit",
+            "battery_discharge_limit_entity": "number.discharge_limit",
+            "battery_max_output_w": 800,
+            "maintenance_full_charge_threshold_pct": 99,
+            "maintenance_full_charge_hold_s": 1800,
+            "maintenance_max_age_days": 30,
+            "maintenance_start_min_t30_c": 10,
+            "maintenance_start_max_t30_c": 35,
+            "maintenance_max_soc_pct": 100,
+            "maintenance_path_cap_w": 0,
+            "dry_run": True,
+        },
+        state_map={
+            "sensor.load": "200",
+            "sensor.battery_temp": "20",
+            "number.battery_limit": {
+                "state": "0",
+                "attributes": {"min": 0, "max": 800, "step": 50},
+            },
+            "number.discharge_limit": {
+                "state": "15",
+                "attributes": {"min": 0, "max": 30, "step": 1},
+            },
+            "number.charging_limit": {
+                "state": "95",
+                "attributes": {"min": 70, "max": 100, "step": 1},
+            },
+        },
+    )
+
+    app.initialize()
+    app._control_tick({})
+    status_update = _latest_status_update(app)
+    assert status_update[2]["maintenance_active"] is True
+    assert status_update[2]["maintenance_due"] is True
+    assert status_update[2]["maintenance_reason"] == "started"

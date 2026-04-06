@@ -232,6 +232,28 @@ Current mismatch classification is heuristic:
 
 Thermal/SOC diagnostics are also published, including `thermal_state`, `desired_min_soc_pct`, `desired_max_soc_pct`, `battery_cap_limit_w`, `battery_min_soc_action`, and `battery_max_soc_action`.
 
+## Maintenance
+
+Monthly maintenance is configured through the typed `maintenance:` section in `site.yaml`.
+
+- `enabled` - turns the maintenance cycle on or off.
+- `storage_path` - SQLite path used to persist maintenance state across restarts.
+- `full_charge_threshold_pct` - SOC threshold that counts as full charge; default `99`.
+- `full_charge_hold_s` - how long SOC must stay above the threshold to count as a successful maintenance charge; default `1800`.
+- `max_age_days` - how old the last successful full charge may be before maintenance becomes due; default `30`.
+- `start_min_t30_c` / `start_max_t30_c` - temperature window required before maintenance may start; defaults `10` and `35`.
+- `maintenance_min_soc_pct` - discharge-floor rail during maintenance; default `15`.
+- `maintenance_max_soc_pct` - charging-limit rail during maintenance; default `100`.
+- `maintenance_path_cap_w` - path cap applied while maintenance is active; default `0`.
+
+Maintenance diagnostics are published in the status entity via:
+
+- `maintenance_active`
+- `maintenance_due`
+- `maintenance_reason`
+- `maintenance_full_charge_elapsed_s`
+- `last_full_charge_at`
+
 ## Availability-aware warning behavior
 
 - `availability_warning_grace_s` - seconds to wait before warning after an expected-missing condition clears; default `900`.

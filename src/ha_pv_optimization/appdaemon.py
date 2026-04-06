@@ -21,10 +21,12 @@ from .models import (
     ControllerConfig,
     ControllerInputs,
     ControllerResult,
+    MaintenancePolicyConfig,
     ThermalPolicyConfig,
     ThermalState,
 )
 from .signals import TimeWeightedSeries
+from .storage import RuntimeStateStore
 
 try:
     from appdaemon.plugins.hass.hassapi import (
@@ -180,6 +182,12 @@ class LoggingConfig:
 
 
 @dataclass(frozen=True)
+class MaintenanceRuntimeConfig:
+    enabled: bool
+    storage_path: str
+
+
+@dataclass(frozen=True)
 class TimeWeightedMetrics:
     consumption_fast_mean_w: float | None
     consumption_slow_q20_w: float | None
@@ -198,9 +206,14 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         self.config = self._build_controller_config()
         self.availability = self._build_availability_config()
         self.logging = self._build_logging_config()
+        self.maintenance = self._build_maintenance_runtime_config()
         self.device_feed_forward = self._build_device_feed_forward_engine()
         self.controller = PowerControllerCore(self.config)
         self.signal_histories = self._build_signal_histories()
+        self.runtime_store = RuntimeStateStore(Path(self.maintenance.storage_path))
+        self.controller.load_maintenance_state(
+            self.runtime_store.load_maintenance_state()
+        )
         self.last_write_monotonic: dict[str, float | None] = {
             "battery": None,
             "inverter": None,
@@ -498,6 +511,32 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
                     400.0,
                 ),
             ),
+            maintenance_policy=MaintenancePolicyConfig(
+                enabled=_as_bool(self.args.get("maintenance_enabled"), True),
+                full_charge_threshold_pct=self._get_float(
+                    "maintenance_full_charge_threshold_pct",
+                    99.0,
+                ),
+                full_charge_hold_s=self._get_float(
+                    "maintenance_full_charge_hold_s",
+                    1800.0,
+                ),
+                max_age_days=self._get_float("maintenance_max_age_days", 30.0),
+                start_min_t30_c=self._get_float("maintenance_start_min_t30_c", 10.0),
+                start_max_t30_c=self._get_float("maintenance_start_max_t30_c", 35.0),
+                maintenance_min_soc_pct=self._get_float(
+                    "maintenance_min_soc_pct",
+                    15.0,
+                ),
+                maintenance_max_soc_pct=self._get_float(
+                    "maintenance_max_soc_pct",
+                    100.0,
+                ),
+                maintenance_path_cap_w=self._get_float(
+                    "maintenance_path_cap_w",
+                    0.0,
+                ),
+            ),
         )
 
     def _build_actuator_config(
@@ -646,6 +685,13 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
                 self.args.get("thermal_log_level"),
                 default="DEBUG",
             ),
+        )
+
+    def _build_maintenance_runtime_config(self) -> MaintenanceRuntimeConfig:
+        return MaintenanceRuntimeConfig(
+            enabled=_as_bool(self.args.get("maintenance_enabled"), True),
+            storage_path=_as_non_empty_str(self.args.get("maintenance_storage_path"))
+            or "/conf/var/noah_controller.sqlite3",
         )
 
     def _build_signal_histories(self) -> dict[str, TimeWeightedSeries]:
@@ -897,6 +943,7 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         )
 
         inputs = ControllerInputs(
+            timestamp=now,
             consumption_w=consumption_w,
             primary_actuator=primary_inputs,
             trim_actuator=trim_inputs,
@@ -947,6 +994,16 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             )
             self.last_reported_thermal_state = result.thermal_state
 
+        if result.maintenance_reason in {"started", "completed", "paused_conditions"}:
+            self.log(
+                "Maintenance state changed"
+                f" active={result.maintenance_active}"
+                f" due={result.maintenance_due}"
+                f" reason={result.maintenance_reason}"
+                f" hold_elapsed={int(result.maintenance_full_charge_elapsed_s)}s"
+                f" last_full_charge_at={result.last_full_charge_at}"
+            )
+
         self.last_thermal_summary = (
             f"state={result.thermal_state}"
             f" reason={result.thermal_reason}"
@@ -954,6 +1011,9 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             f" t30={tw_metrics.battery_temp_t30_c}"
             f" heating={inputs.battery_heating_active}"
             f" high_temp_alarm={inputs.battery_high_temp_alarm_active}"
+            f" maintenance_active={result.maintenance_active}"
+            f" maintenance_due={result.maintenance_due}"
+            f" maintenance_reason={result.maintenance_reason}"
             f" desired_min_soc={int(result.desired_min_soc_pct)}%"
             f" desired_max_soc={int(result.desired_max_soc_pct)}%"
             f" battery_cap_limit={int(result.battery_cap_limit_w)}W"
@@ -1003,6 +1063,10 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             max_soc_action=max_soc_action,
             device_contributions=device_contributions,
         )
+        if self.maintenance.enabled:
+            self.runtime_store.save_maintenance_state(
+                self.controller.maintenance_state_snapshot()
+            )
 
     def _heartbeat_tick(self, kwargs: dict[str, Any]) -> None:
         self.log(f"Control heartbeat {self.last_control_summary}")
@@ -1039,6 +1103,9 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             f" battery_allowed={int(result.battery_allowed_max_output_w)}W"
             f" inverter_allowed={int(result.inverter_allowed_max_output_w)}W"
             f" thermal={result.thermal_state}"
+            f" maintenance_active={result.maintenance_active}"
+            f" maintenance_due={result.maintenance_due}"
+            f" maintenance_reason={result.maintenance_reason}"
             f" current={int(result.current_limit_w)}W"
             f" degraded={degraded_mode}"
             f" battery={self._format_actuator_summary(result.primary_actuator)}"
@@ -1710,6 +1777,16 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             "degraded_reasons": list(degraded_reasons),
             "thermal_state": result.thermal_state,
             "thermal_reason": result.thermal_reason,
+            "maintenance_active": result.maintenance_active,
+            "maintenance_due": result.maintenance_due,
+            "maintenance_reason": result.maintenance_reason,
+            "maintenance_full_charge_elapsed_s": round(
+                result.maintenance_full_charge_elapsed_s,
+                1,
+            ),
+            "last_full_charge_at": None
+            if result.last_full_charge_at is None
+            else result.last_full_charge_at.isoformat(),
             "desired_min_soc_pct": round(result.desired_min_soc_pct, 1),
             "desired_max_soc_pct": round(result.desired_max_soc_pct, 1),
             "battery_cap_limit_w": round(result.battery_cap_limit_w, 1),

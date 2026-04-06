@@ -95,6 +95,7 @@ It includes:
 - `control` - controller tuning values
 - `battery_policy` - current battery-side reserve/derate policy values
 - `thermal` - thermal-state thresholds and the desired SOC/cap outputs for `NORMAL`, `HOT`, and `VERY_HOT`
+- `maintenance` - monthly full-charge maintenance rules and SQLite state path
 - `devices` - per-device feed-forward models
 - `availability` - expected-missing warning tuning
 - `logging` - debug entity prefix and optional cycle-log routing

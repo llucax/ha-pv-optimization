@@ -339,6 +339,7 @@ class ReplayRunner:
 
             result = controller.step(
                 ControllerInputs(
+                    timestamp=current_time,
                     consumption_w=consumption_w,
                     primary_actuator=ActuatorInputs(current_limit_w=battery_limit_w),
                     trim_actuator=None

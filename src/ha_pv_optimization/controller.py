@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from .models import (
     ActuatorConfig,
     ActuatorInputs,
@@ -26,6 +28,23 @@ class PowerControllerCore:
         self.smoothed_net_consumption_w: float | None = None
         self.thermal_state = ThermalState.NORMAL
         self.thermal_clear_elapsed_s = 0.0
+        self.maintenance_active = False
+        self.maintenance_full_charge_elapsed_s = 0.0
+        self.last_full_charge_at = None
+
+    def load_maintenance_state(self, snapshot) -> None:
+        self.maintenance_active = snapshot.maintenance_active
+        self.maintenance_full_charge_elapsed_s = snapshot.full_charge_elapsed_s
+        self.last_full_charge_at = snapshot.last_full_charge_at
+
+    def maintenance_state_snapshot(self):
+        from .models import MaintenanceStateSnapshot
+
+        return MaintenanceStateSnapshot(
+            maintenance_active=self.maintenance_active,
+            full_charge_elapsed_s=self.maintenance_full_charge_elapsed_s,
+            last_full_charge_at=self.last_full_charge_at,
+        )
 
     def step(self, inputs: ControllerInputs) -> ControllerResult:
         visible_load_w = max(0.0, inputs.consumption_w + self.config.baseline_load_w)
@@ -53,6 +72,13 @@ class PowerControllerCore:
         desired_min_soc_pct, desired_max_soc_pct, battery_cap_limit_w = (
             self._thermal_limits(thermal_state)
         )
+        maintenance_due, maintenance_reason = self._update_maintenance_state(
+            inputs,
+            thermal_state=thermal_state,
+        )
+        if self.maintenance_active:
+            desired_min_soc_pct = self.config.maintenance_policy.maintenance_min_soc_pct
+            desired_max_soc_pct = self.config.maintenance_policy.maintenance_max_soc_pct
 
         battery_allowed_max_output_w = self._allowed_battery_output_w(
             inputs,
@@ -123,6 +149,17 @@ class PowerControllerCore:
             self.cap_cmd_w = 0.0
             reason_parts.append("low_demand_zero")
 
+        if self.maintenance_active:
+            requested_target_w = min(
+                requested_target_w,
+                self.config.maintenance_policy.maintenance_path_cap_w,
+            )
+            self.cap_cmd_w = min(
+                self.cap_cmd_w,
+                self.config.maintenance_policy.maintenance_path_cap_w,
+            )
+            reason_parts.append("maintenance_active")
+
         desired_path_cap_w = clamp(requested_target_w, 0.0, allowed_path_cap_w)
 
         battery_result = self._build_actuator_result(
@@ -175,6 +212,11 @@ class PowerControllerCore:
             degraded_reasons=degraded_reasons,
             thermal_state=thermal_state,
             thermal_reason=thermal_reason,
+            maintenance_active=self.maintenance_active,
+            maintenance_due=maintenance_due,
+            maintenance_reason=maintenance_reason,
+            maintenance_full_charge_elapsed_s=self.maintenance_full_charge_elapsed_s,
+            last_full_charge_at=self.last_full_charge_at,
             desired_min_soc_pct=desired_min_soc_pct,
             desired_max_soc_pct=desired_max_soc_pct,
             battery_cap_limit_w=battery_cap_limit_w,
@@ -712,4 +754,72 @@ class PowerControllerCore:
             policy.normal_min_soc_pct,
             policy.normal_max_soc_pct,
             policy.normal_cap_limit_w,
+        )
+
+    def _update_maintenance_state(
+        self,
+        inputs: ControllerInputs,
+        *,
+        thermal_state: ThermalState,
+    ) -> tuple[bool, str]:
+        policy = self.config.maintenance_policy
+        if not policy.enabled or inputs.timestamp is None:
+            self.maintenance_active = False
+            self.maintenance_full_charge_elapsed_s = 0.0
+            return False, "disabled"
+
+        maintenance_due = self._maintenance_due(inputs.timestamp)
+        conditions_ok = self._maintenance_conditions_ok(inputs, thermal_state)
+
+        if self.maintenance_active:
+            if not conditions_ok:
+                self.maintenance_active = False
+                self.maintenance_full_charge_elapsed_s = 0.0
+                return maintenance_due, "paused_conditions"
+
+            if (
+                inputs.soc_pct is not None
+                and inputs.soc_pct >= policy.full_charge_threshold_pct
+            ):
+                self.maintenance_full_charge_elapsed_s += self.config.control_interval_s
+                if self.maintenance_full_charge_elapsed_s >= policy.full_charge_hold_s:
+                    self.last_full_charge_at = inputs.timestamp
+                    self.maintenance_active = False
+                    self.maintenance_full_charge_elapsed_s = 0.0
+                    return False, "completed"
+                return True, "holding_full_charge"
+
+            self.maintenance_full_charge_elapsed_s = 0.0
+            return True, "charging_to_full"
+
+        if maintenance_due and conditions_ok:
+            self.maintenance_active = True
+            self.maintenance_full_charge_elapsed_s = 0.0
+            return True, "started"
+
+        if maintenance_due:
+            return True, "waiting_conditions"
+        return False, "not_due"
+
+    def _maintenance_due(self, now: datetime) -> bool:
+        policy = self.config.maintenance_policy
+        if self.last_full_charge_at is None:
+            return True
+        age_days = (now - self.last_full_charge_at).total_seconds() / 86400.0
+        return age_days >= policy.max_age_days
+
+    def _maintenance_conditions_ok(
+        self,
+        inputs: ControllerInputs,
+        thermal_state: ThermalState,
+    ) -> bool:
+        policy = self.config.maintenance_policy
+        if thermal_state != ThermalState.NORMAL:
+            return False
+        if inputs.battery_temp_t30_c is None:
+            return False
+        return (
+            policy.start_min_t30_c
+            <= inputs.battery_temp_t30_c
+            <= policy.start_max_t30_c
         )

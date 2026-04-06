@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from ha_pv_optimization.controller import PowerControllerCore
@@ -9,6 +10,7 @@ from ha_pv_optimization.models import (
     ActuatorInputs,
     ControllerConfig,
     ControllerInputs,
+    MaintenanceStateSnapshot,
     ThermalPolicyConfig,
     ThermalState,
 )
@@ -457,3 +459,85 @@ def test_very_hot_state_limits_battery_output_and_recovers_with_hysteresis() -> 
         )
     )
     assert recover_step_2.thermal_state == ThermalState.HOT
+
+
+def test_maintenance_starts_when_overdue_and_conditions_are_ok() -> None:
+    controller = _single_actuator_controller(
+        control_interval_s=30.0,
+        min_write_interval_s=0.0,
+    )
+    now = datetime(2026, 4, 4, 12, 0, tzinfo=UTC)
+
+    result = controller.step(
+        ControllerInputs(
+            timestamp=now,
+            consumption_w=300.0,
+            primary_actuator=ActuatorInputs(
+                current_limit_w=200.0,
+                seconds_since_last_write=999.0,
+            ),
+            soc_pct=80.0,
+            battery_temp_t30_c=20.0,
+            battery_temp_t5_c=20.0,
+        )
+    )
+
+    assert result.maintenance_active is True
+    assert result.maintenance_due is True
+    assert result.maintenance_reason == "started"
+    assert result.desired_max_soc_pct == 100.0
+    assert result.target_limit_w == 0.0
+
+
+def test_maintenance_completes_after_full_charge_hold() -> None:
+    controller = _single_actuator_controller(control_interval_s=60.0)
+    start = datetime(2026, 4, 4, 12, 0, tzinfo=UTC)
+    controller.load_maintenance_state(
+        MaintenanceStateSnapshot(
+            maintenance_active=True,
+            full_charge_elapsed_s=1740.0,
+            last_full_charge_at=None,
+        )
+    )
+
+    result = controller.step(
+        ControllerInputs(
+            timestamp=start,
+            consumption_w=0.0,
+            primary_actuator=ActuatorInputs(
+                current_limit_w=0.0,
+                seconds_since_last_write=999.0,
+            ),
+            soc_pct=99.5,
+            battery_temp_t30_c=20.0,
+            battery_temp_t5_c=20.0,
+        )
+    )
+
+    assert result.maintenance_active is False
+    assert result.maintenance_due is False
+    assert result.maintenance_reason == "completed"
+    assert result.last_full_charge_at == start
+
+
+def test_maintenance_waits_for_allowed_thermal_window() -> None:
+    controller = _single_actuator_controller(control_interval_s=30.0)
+    now = datetime(2026, 4, 4, 12, 0, tzinfo=UTC)
+
+    result = controller.step(
+        ControllerInputs(
+            timestamp=now,
+            consumption_w=200.0,
+            primary_actuator=ActuatorInputs(
+                current_limit_w=100.0,
+                seconds_since_last_write=999.0,
+            ),
+            soc_pct=80.0,
+            battery_temp_t30_c=5.0,
+            battery_temp_t5_c=5.0,
+        )
+    )
+
+    assert result.maintenance_active is False
+    assert result.maintenance_due is True
+    assert result.maintenance_reason == "waiting_conditions"

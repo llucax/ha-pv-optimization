@@ -7,7 +7,12 @@ from typing import Any
 import yaml
 
 from .device_models import DeviceModelConfig, DeviceModelKind
-from .models import ActuatorConfig, ControllerConfig, ThermalPolicyConfig
+from .models import (
+    ActuatorConfig,
+    ControllerConfig,
+    MaintenancePolicyConfig,
+    ThermalPolicyConfig,
+)
 
 
 def _mapping(value: Any, *, context: str) -> dict[str, Any]:
@@ -542,6 +547,66 @@ class ThermalSiteConfig:
 
 
 @dataclass(frozen=True)
+class MaintenanceSiteConfig:
+    enabled: bool = True
+    storage_path: str = "/conf/var/noah_controller.sqlite3"
+    full_charge_threshold_pct: float = 99.0
+    full_charge_hold_s: float = 1800.0
+    max_age_days: float = 30.0
+    start_min_t30_c: float = 10.0
+    start_max_t30_c: float = 35.0
+    maintenance_min_soc_pct: float = 15.0
+    maintenance_max_soc_pct: float = 100.0
+    maintenance_path_cap_w: float = 0.0
+
+    @classmethod
+    def from_mapping(
+        cls,
+        mapping: dict[str, Any] | None,
+    ) -> MaintenanceSiteConfig:
+        if mapping is None:
+            return cls()
+        enabled = _optional_bool(mapping, "enabled")
+        return cls(
+            enabled=True if enabled is None else enabled,
+            storage_path=_optional_str(mapping, "storage_path")
+            or "/conf/var/noah_controller.sqlite3",
+            full_charge_threshold_pct=_with_default(
+                _optional_float(mapping, "full_charge_threshold_pct"),
+                99.0,
+            ),
+            full_charge_hold_s=_with_default(
+                _optional_float(mapping, "full_charge_hold_s"),
+                1800.0,
+            ),
+            max_age_days=_with_default(
+                _optional_float(mapping, "max_age_days"),
+                30.0,
+            ),
+            start_min_t30_c=_with_default(
+                _optional_float(mapping, "start_min_t30_c"),
+                10.0,
+            ),
+            start_max_t30_c=_with_default(
+                _optional_float(mapping, "start_max_t30_c"),
+                35.0,
+            ),
+            maintenance_min_soc_pct=_with_default(
+                _optional_float(mapping, "maintenance_min_soc_pct"),
+                15.0,
+            ),
+            maintenance_max_soc_pct=_with_default(
+                _optional_float(mapping, "maintenance_max_soc_pct"),
+                100.0,
+            ),
+            maintenance_path_cap_w=_with_default(
+                _optional_float(mapping, "maintenance_path_cap_w"),
+                0.0,
+            ),
+        )
+
+
+@dataclass(frozen=True)
 class SiteConfig:
     consumption: ConsumptionSiteConfig
     battery: ActuatorSiteConfig
@@ -554,6 +619,7 @@ class SiteConfig:
         default_factory=BatteryPolicySiteConfig
     )
     thermal: ThermalSiteConfig = field(default_factory=ThermalSiteConfig)
+    maintenance: MaintenanceSiteConfig = field(default_factory=MaintenanceSiteConfig)
     availability: AvailabilitySiteConfig = field(default_factory=AvailabilitySiteConfig)
     logging: LoggingSiteConfig = field(default_factory=LoggingSiteConfig)
     devices: dict[str, DeviceModelSiteConfig] = field(default_factory=dict)
@@ -587,6 +653,9 @@ class SiteConfig:
             ),
             thermal=ThermalSiteConfig.from_mapping(
                 _optional_mapping(mapping.get("thermal"), context="thermal")
+            ),
+            maintenance=MaintenanceSiteConfig.from_mapping(
+                _optional_mapping(mapping.get("maintenance"), context="maintenance")
             ),
             availability=AvailabilitySiteConfig.from_mapping(
                 _optional_mapping(mapping.get("availability"), context="availability")
@@ -711,6 +780,18 @@ def site_config_to_appdaemon_args(site_config: SiteConfig) -> dict[str, Any]:
         "thermal_very_hot_min_soc_pct": site_config.thermal.very_hot_min_soc_pct,
         "thermal_very_hot_max_soc_pct": site_config.thermal.very_hot_max_soc_pct,
         "thermal_very_hot_cap_limit_w": site_config.thermal.very_hot_cap_limit_w,
+        "maintenance_enabled": site_config.maintenance.enabled,
+        "maintenance_storage_path": site_config.maintenance.storage_path,
+        "maintenance_full_charge_threshold_pct": (
+            site_config.maintenance.full_charge_threshold_pct
+        ),
+        "maintenance_full_charge_hold_s": site_config.maintenance.full_charge_hold_s,
+        "maintenance_max_age_days": site_config.maintenance.max_age_days,
+        "maintenance_start_min_t30_c": site_config.maintenance.start_min_t30_c,
+        "maintenance_start_max_t30_c": site_config.maintenance.start_max_t30_c,
+        "maintenance_min_soc_pct": site_config.maintenance.maintenance_min_soc_pct,
+        "maintenance_max_soc_pct": site_config.maintenance.maintenance_max_soc_pct,
+        "maintenance_path_cap_w": site_config.maintenance.maintenance_path_cap_w,
         "availability_warning_grace_s": site_config.availability.warning_grace_s,
         "availability_idle_output_threshold_w": (
             site_config.availability.idle_output_threshold_w
@@ -877,6 +958,17 @@ def controller_config_from_site_config(
             very_hot_min_soc_pct=site_config.thermal.very_hot_min_soc_pct,
             very_hot_max_soc_pct=site_config.thermal.very_hot_max_soc_pct,
             very_hot_cap_limit_w=site_config.thermal.very_hot_cap_limit_w,
+        ),
+        maintenance_policy=MaintenancePolicyConfig(
+            enabled=site_config.maintenance.enabled,
+            full_charge_threshold_pct=site_config.maintenance.full_charge_threshold_pct,
+            full_charge_hold_s=site_config.maintenance.full_charge_hold_s,
+            max_age_days=site_config.maintenance.max_age_days,
+            start_min_t30_c=site_config.maintenance.start_min_t30_c,
+            start_max_t30_c=site_config.maintenance.start_max_t30_c,
+            maintenance_min_soc_pct=site_config.maintenance.maintenance_min_soc_pct,
+            maintenance_max_soc_pct=site_config.maintenance.maintenance_max_soc_pct,
+            maintenance_path_cap_w=site_config.maintenance.maintenance_path_cap_w,
         ),
     )
 
