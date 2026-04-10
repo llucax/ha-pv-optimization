@@ -393,7 +393,9 @@ def test_status_reports_requested_translated_and_applied_targets() -> None:
     app.initialize()
     app._control_tick({})
 
-    assert app.service_calls == []
+    assert app.service_calls == [
+        ("number/set_value", {"entity_id": "number.inverter_limit", "value": 30})
+    ]
     status_update = _latest_status_update(app)
     assert status_update[2]["requested_target_power_control_w"] == 0.0
     assert status_update[2]["target_power_control_w"] == 0.0
@@ -402,8 +404,8 @@ def test_status_reports_requested_translated_and_applied_targets() -> None:
     assert status_update[2]["battery_translated_power_control_w"] == 0.0
     assert status_update[2]["battery_applied_power_control_w"] == 0.0
     assert status_update[2]["inverter_requested_power_control_w"] == 0.0
-    assert status_update[2]["inverter_translated_power_control_w"] == 0.0
-    assert status_update[2]["inverter_applied_power_control_w"] == 230.0
+    assert status_update[2]["inverter_translated_power_control_w"] == 30.0
+    assert status_update[2]["inverter_applied_power_control_w"] == 30.0
 
 
 def test_skip_cycles_emit_startup_and_periodic_heartbeat(monkeypatch: Any) -> None:

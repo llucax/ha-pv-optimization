@@ -167,7 +167,6 @@ class PowerControllerCore:
             inputs=inputs.battery_actuator,
             desired_target_w=desired_path_cap_w,
             allowed_max_output_w=battery_allowed_max_output_w,
-            other_actuator_available=inputs.inverter_actuator is not None,
             export_fast=False,
         )
         inverter_result = None
@@ -177,7 +176,6 @@ class PowerControllerCore:
                 inputs=inputs.inverter_actuator,
                 desired_target_w=desired_path_cap_w,
                 allowed_max_output_w=inverter_allowed_max_output_w,
-                other_actuator_available=inputs.battery_actuator is not None,
                 export_fast=False,
             )
 
@@ -419,7 +417,6 @@ class PowerControllerCore:
         inputs: ActuatorInputs | None,
         desired_target_w: float,
         allowed_max_output_w: float,
-        other_actuator_available: bool,
         export_fast: bool,
     ) -> ActuatorResult:
         if inputs is None:
@@ -445,21 +442,6 @@ class PowerControllerCore:
             allowed_max_output_w=allowed_max_output_w,
             export_fast=export_fast,
         )
-
-        if other_actuator_available and desired_target_w < config.min_output_w:
-            return ActuatorResult(
-                label=config.label,
-                available=True,
-                action="skip",
-                reason="below_min_supported_by_other",
-                current_limit_w=current_limit_w,
-                requested_limit_w=desired_target_w,
-                translated_limit_w=0.0,
-                target_limit_w=0.0,
-                applied_limit_w=current_limit_w,
-                actual_power_w=inputs.actual_power_w,
-                allowed_max_output_w=allowed_max_output_w,
-            )
 
         delta_w = abs(translated_limit_w - current_limit_w)
         if delta_w < config.min_change_w:

@@ -276,7 +276,7 @@ def test_trim_actuator_can_run_alone_when_primary_is_unavailable() -> None:
     assert result.trim_actuator.target_limit_w == 200.0
 
 
-def test_path_cap_is_clamped_by_battery_before_inverter_target() -> None:
+def test_path_cap_is_clamped_by_battery_before_inverter_minimum_target() -> None:
     controller = PowerControllerCore(
         ControllerConfig(
             primary_actuator=ActuatorConfig(
@@ -324,10 +324,11 @@ def test_path_cap_is_clamped_by_battery_before_inverter_target() -> None:
     assert result.target_limit_w == 0.0
     assert result.primary_actuator.target_limit_w == 0.0
     assert result.trim_actuator is not None
-    assert result.trim_actuator.target_limit_w == 0.0
-    assert result.trim_actuator.reason == "below_min_supported_by_other"
+    assert result.trim_actuator.target_limit_w == 30.0
+    assert result.trim_actuator.applied_limit_w == 30.0
+    assert result.trim_actuator.reason == "write"
     assert result.effective_target_w == 0.0
-    assert result.degraded_mode == "inverter_not_enforcing_target"
+    assert result.degraded_mode == "nominal"
 
 
 def test_device_feed_forward_bias_is_added_to_requested_target() -> None:
