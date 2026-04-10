@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -66,6 +67,59 @@ class DeviceModelRuntime:
     def update_sample(self, timestamp: datetime, power_w: float) -> None:
         self.current_power_w = power_w
         self.last_sample_at = timestamp
+
+    def runtime_state_snapshot(self) -> dict[str, float | str | None]:
+        return {
+            "current_power_w": self.current_power_w,
+            "last_sample_at": None
+            if self.last_sample_at is None
+            else self.last_sample_at.isoformat(),
+            "state": self.state.value,
+            "pending_state": None
+            if self.pending_state is None
+            else self.pending_state.value,
+            "pending_since": None
+            if self.pending_since is None
+            else self.pending_since.isoformat(),
+            "transition_bias_w": self.transition_bias_w,
+            "transition_bias_until": None
+            if self.transition_bias_until is None
+            else self.transition_bias_until.isoformat(),
+        }
+
+    def load_runtime_state(
+        self,
+        snapshot: Mapping[str, object],
+        *,
+        now: datetime,
+        age_s: float,
+    ) -> None:
+        self.current_power_w = float(snapshot.get("current_power_w", 0.0))
+        self.last_sample_at = _optional_datetime(snapshot.get("last_sample_at"))
+        self.state = _device_run_state(
+            snapshot.get("state"), default=DeviceRunState.OFF
+        )
+        self.pending_state = _device_run_state(
+            snapshot.get("pending_state"),
+            default=None,
+        )
+        self.pending_since = _optional_datetime(snapshot.get("pending_since"))
+        self.transition_bias_w = float(snapshot.get("transition_bias_w", 0.0))
+        self.transition_bias_until = _optional_datetime(
+            snapshot.get("transition_bias_until")
+        )
+
+        pending_resume_max_age_s = max(
+            self.config.enter_persistence_s,
+            self.config.exit_persistence_s,
+        )
+        if age_s > pending_resume_max_age_s:
+            self.pending_state = None
+            self.pending_since = None
+
+        if self.transition_bias_until is not None and now >= self.transition_bias_until:
+            self.transition_bias_w = 0.0
+            self.transition_bias_until = None
 
     def advance(self, now: datetime) -> None:
         observed_state = self._observed_state()
@@ -210,6 +264,25 @@ class DeviceFeedForwardEngine:
         total_bias_w = sum(contribution.bias_w for contribution in contributions)
         return total_bias_w, contributions
 
+    def runtime_state_snapshot(self) -> dict[str, dict[str, float | str | None]]:
+        return {
+            name: runtime.runtime_state_snapshot()
+            for name, runtime in self.runtimes.items()
+        }
+
+    def load_runtime_state(
+        self,
+        snapshots: Mapping[str, Mapping[str, object]],
+        *,
+        now: datetime,
+        age_s: float,
+    ) -> None:
+        for name, snapshot in snapshots.items():
+            runtime = self.runtimes.get(name)
+            if runtime is None:
+                continue
+            runtime.load_runtime_state(snapshot, now=now, age_s=age_s)
+
 
 def default_device_configs() -> dict[str, DeviceModelConfig]:
     return {
@@ -256,6 +329,22 @@ def default_device_configs() -> dict[str, DeviceModelConfig]:
             ff_hold_s=120.0,
         ),
     }
+
+
+def _optional_datetime(value: object) -> datetime | None:
+    if value is None:
+        return None
+    return datetime.fromisoformat(str(value))
+
+
+def _device_run_state(
+    value: object,
+    *,
+    default: DeviceRunState | None,
+) -> DeviceRunState | None:
+    if value is None:
+        return default
+    return DeviceRunState(str(value))
 
 
 def empty_feed_forward_engine() -> DeviceFeedForwardEngine:

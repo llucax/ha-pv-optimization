@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 
 from .models import (
@@ -45,6 +46,65 @@ class PowerControllerCore:
             full_charge_elapsed_s=self.maintenance_full_charge_elapsed_s,
             last_full_charge_at=self.last_full_charge_at,
         )
+
+    def runtime_state_snapshot(self) -> dict[str, float | int | str | None]:
+        return {
+            "cap_cmd_w": self.cap_cmd_w,
+            "lockout_remaining_s": self.lockout_remaining_s,
+            "minor_up_elapsed_s": self.minor_up_elapsed_s,
+            "major_up_elapsed_s": self.major_up_elapsed_s,
+            "down_elapsed_s": self.down_elapsed_s,
+            "moderate_oversupply_streak": self.moderate_oversupply_streak,
+            "thermal_state": self.thermal_state.value,
+            "thermal_clear_elapsed_s": self.thermal_clear_elapsed_s,
+        }
+
+    def load_runtime_state(
+        self,
+        snapshot: Mapping[str, object] | None,
+        *,
+        age_s: float,
+        restore_control_state: bool,
+        restore_event_state: bool,
+        restore_thermal_state: bool,
+    ) -> None:
+        if snapshot is None:
+            return
+
+        if restore_control_state:
+            cap_cmd_w = snapshot.get("cap_cmd_w")
+            self.cap_cmd_w = None if cap_cmd_w is None else float(cap_cmd_w)
+            self.lockout_remaining_s = max(
+                0.0,
+                float(snapshot.get("lockout_remaining_s", 0.0)) - age_s,
+            )
+
+        if restore_event_state:
+            self.minor_up_elapsed_s = max(
+                0.0,
+                float(snapshot.get("minor_up_elapsed_s", 0.0)),
+            )
+            self.major_up_elapsed_s = max(
+                0.0,
+                float(snapshot.get("major_up_elapsed_s", 0.0)),
+            )
+            self.down_elapsed_s = max(
+                0.0,
+                float(snapshot.get("down_elapsed_s", 0.0)),
+            )
+            self.moderate_oversupply_streak = max(
+                0,
+                int(snapshot.get("moderate_oversupply_streak", 0)),
+            )
+
+        if restore_thermal_state:
+            thermal_state = snapshot.get("thermal_state")
+            if thermal_state is not None:
+                self.thermal_state = ThermalState(str(thermal_state))
+            self.thermal_clear_elapsed_s = max(
+                0.0,
+                float(snapshot.get("thermal_clear_elapsed_s", 0.0)),
+            )
 
     def step(self, inputs: ControllerInputs) -> ControllerResult:
         visible_load_w = max(0.0, inputs.consumption_w + self.config.baseline_load_w)

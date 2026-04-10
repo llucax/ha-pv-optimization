@@ -119,6 +119,41 @@ def _normalized_log_level(value: Any, default: str = "DEBUG") -> str:
     return default
 
 
+def _optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _mapping_snapshot(
+    mapping: dict[str, Any],
+    *keys: str,
+) -> dict[str, object] | None:
+    current: Any = mapping
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    if not isinstance(current, dict):
+        return None
+    return current
+
+
+def _nested_mapping_snapshot(
+    mapping: dict[str, Any],
+    key: str,
+) -> dict[str, dict[str, object]]:
+    value = mapping.get(key)
+    if not isinstance(value, dict):
+        return {}
+    nested: dict[str, dict[str, object]] = {}
+    for nested_key, nested_value in value.items():
+        if isinstance(nested_key, str) and isinstance(nested_value, dict):
+            nested[nested_key] = nested_value
+    return nested
+
+
 _DEFAULT_AVAILABILITY_WARNING_GRACE_S = 15 * 60.0
 _DEFAULT_AVAILABILITY_IDLE_OUTPUT_THRESHOLD_W = 20.0
 _DEFAULT_AVAILABILITY_LOW_SUN_ELEVATION_DEG = 10.0
@@ -132,6 +167,22 @@ _TW_SLOW_WINDOW_S = 20.0
 _TW_PRE_EVENT_WINDOW_S = 10.0
 _TW_BATTERY_TEMP_SHORT_WINDOW_S = 5 * 60.0
 _TW_BATTERY_TEMP_LONG_WINDOW_S = 30 * 60.0
+_CONTROL_RUNTIME_RESUME_MIN_AGE_S = 60.0
+_SIGNAL_HISTORY_RESUME_MAX_AGE_S = {
+    "consumption": max(
+        _TW_FAST_WINDOW_S,
+        _TW_SLOW_WINDOW_S,
+        _TW_PRE_EVENT_WINDOW_S,
+    ),
+    "net": max(
+        _TW_FAST_WINDOW_S,
+        _TW_SLOW_WINDOW_S,
+    ),
+    "battery_temperature": max(
+        _TW_BATTERY_TEMP_SHORT_WINDOW_S,
+        _TW_BATTERY_TEMP_LONG_WINDOW_S,
+    ),
+}
 
 
 def _default_power_control_service(entity_id: str) -> str | None:
@@ -214,6 +265,7 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         self.controller.load_maintenance_state(
             self.runtime_store.load_maintenance_state()
         )
+        self._restore_signal_histories()
         self.last_write_monotonic: dict[str, float | None] = {
             "battery": None,
             "inverter": None,
@@ -238,6 +290,10 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             "min_soc": None,
             "max_soc": None,
         }
+        self.last_soc_rail_write_iso: dict[str, str | None] = {
+            "min_soc": None,
+            "max_soc": None,
+        }
         self.last_soc_rail_observed_pct: dict[str, int | None] = {
             "min_soc": None,
             "max_soc": None,
@@ -252,6 +308,8 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         self.missing_required_unexpected_since_monotonic: float | None = None
         self.missing_required_unexpected_since_iso: str | None = None
         self.missing_required_warning_active = False
+
+        self._restore_runtime_state()
 
         inverter_label = None
         if self.entities.trim_actuator is not None:
@@ -729,6 +787,132 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             timestamp=timestamp,
         )
 
+    def _restore_signal_histories(self) -> None:
+        now = dt.datetime.now(dt.UTC)
+        for history_key, samples in self.runtime_store.load_signal_histories().items():
+            series = self.signal_histories.get(history_key)
+            if series is None or not samples:
+                continue
+
+            latest_timestamp = samples[-1].timestamp
+            max_age_s = _SIGNAL_HISTORY_RESUME_MAX_AGE_S.get(
+                history_key,
+                series.max_history_s,
+            )
+            age_s = (now - latest_timestamp).total_seconds()
+            if age_s > max_age_s:
+                self.runtime_store.clear_signal_history(history_key)
+                continue
+
+            series.load_samples(samples)
+
+    def _restore_runtime_state(self) -> None:
+        loaded_snapshot = self.runtime_store.load_runtime_snapshot()
+        if loaded_snapshot is None:
+            return
+
+        now = dt.datetime.now(dt.UTC)
+        saved_at, snapshot = loaded_snapshot
+        age_s = max(0.0, (now - saved_at).total_seconds())
+
+        self.controller.load_runtime_state(
+            _mapping_snapshot(snapshot, "controller"),
+            age_s=age_s,
+            restore_control_state=age_s <= self._controller_runtime_resume_max_age_s(),
+            restore_event_state=age_s
+            <= _SIGNAL_HISTORY_RESUME_MAX_AGE_S["consumption"],
+            restore_thermal_state=age_s
+            <= _SIGNAL_HISTORY_RESUME_MAX_AGE_S["battery_temperature"],
+        )
+        if age_s <= _SIGNAL_HISTORY_RESUME_MAX_AGE_S["battery_temperature"]:
+            self.last_reported_thermal_state = self.controller.thermal_state
+
+        self._restore_actuator_runtime(
+            slot="battery",
+            config=self.config.primary_actuator,
+            snapshot=_mapping_snapshot(snapshot, "actuators", "battery"),
+        )
+        if self.config.trim_actuator is not None:
+            self._restore_actuator_runtime(
+                slot="inverter",
+                config=self.config.trim_actuator,
+                snapshot=_mapping_snapshot(snapshot, "actuators", "inverter"),
+            )
+
+        self._restore_soc_rail_runtime(
+            label="min_soc",
+            snapshot=_mapping_snapshot(snapshot, "soc_rails", "min_soc"),
+        )
+        self._restore_soc_rail_runtime(
+            label="max_soc",
+            snapshot=_mapping_snapshot(snapshot, "soc_rails", "max_soc"),
+        )
+
+        self.device_feed_forward.load_runtime_state(
+            _nested_mapping_snapshot(snapshot, "devices"),
+            now=now,
+            age_s=age_s,
+        )
+
+    def _restore_actuator_runtime(
+        self,
+        *,
+        slot: str,
+        config: ActuatorConfig,
+        snapshot: dict[str, object] | None,
+    ) -> None:
+        if snapshot is None:
+            return
+
+        last_write_iso = _optional_text(snapshot.get("last_write_at"))
+        age_s = self._seconds_since_event(last_write_iso=last_write_iso)
+        resume_max_age_s = max(
+            config.min_write_interval_s,
+            _COMMAND_MISMATCH_GRACE_S,
+        )
+        if age_s is None or age_s > resume_max_age_s:
+            return
+
+        self.last_write_iso[slot] = last_write_iso
+        self.last_write_monotonic[slot] = None
+        self.last_command_target_w[slot] = _as_float(
+            snapshot.get("last_command_target_w")
+        )
+        self.last_command_observed_w[slot] = _as_float(
+            snapshot.get("last_command_observed_w")
+        )
+
+    def _restore_soc_rail_runtime(
+        self,
+        *,
+        label: str,
+        snapshot: dict[str, object] | None,
+    ) -> None:
+        if snapshot is None:
+            return
+
+        last_write_iso = _optional_text(snapshot.get("last_write_at"))
+        age_s = self._seconds_since_event(last_write_iso=last_write_iso)
+        if age_s is None or age_s > _SOC_RAIL_RETRY_INTERVAL_S:
+            return
+
+        last_target_pct = snapshot.get("last_target_pct")
+        last_observed_pct = snapshot.get("last_observed_pct")
+        self.last_soc_rail_target_pct[label] = (
+            None if last_target_pct is None else int(last_target_pct)
+        )
+        self.last_soc_rail_write_monotonic[label] = None
+        self.last_soc_rail_write_iso[label] = last_write_iso
+        self.last_soc_rail_observed_pct[label] = (
+            None if last_observed_pct is None else int(last_observed_pct)
+        )
+
+    def _controller_runtime_resume_max_age_s(self) -> float:
+        return max(
+            _CONTROL_RUNTIME_RESUME_MIN_AGE_S,
+            2.0 * self.config.control_interval_s,
+        )
+
     def _register_signal_listeners(self) -> None:
         self._register_signal_listener(
             entity_id=self.entities.consumption_entity,
@@ -777,7 +961,27 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         value = _as_float(new)
         if value is None:
             return
-        self.signal_histories[history_key].update(dt.datetime.now(dt.UTC), value)
+        self._update_signal_history(
+            history_key=history_key,
+            timestamp=dt.datetime.now(dt.UTC),
+            value=value,
+        )
+
+    def _update_signal_history(
+        self,
+        *,
+        history_key: str,
+        timestamp: dt.datetime,
+        value: float,
+    ) -> None:
+        series = self.signal_histories[history_key]
+        series.update(timestamp, value)
+        self.runtime_store.save_signal_sample(
+            history_key,
+            timestamp,
+            value,
+            max_history_s=series.max_history_s,
+        )
 
     def _on_device_state_change(
         self,
@@ -808,7 +1012,11 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         value = self._read_entity_float(entity_id)
         if value is None:
             return
-        self.signal_histories[history_key].update(timestamp, value)
+        self._update_signal_history(
+            history_key=history_key,
+            timestamp=timestamp,
+            value=value,
+        )
 
     def _record_device_samples(self, timestamp: dt.datetime) -> None:
         for name, runtime in self.device_feed_forward.runtimes.items():
@@ -906,6 +1114,7 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             entity_config=self.entities.primary_actuator,
             actual_power_w=primary_actual_power_w,
             last_write_monotonic=self.last_write_monotonic["battery"],
+            last_write_iso=self.last_write_iso["battery"],
             last_command_target_w=self.last_command_target_w["battery"],
             last_command_observed_w=self.last_command_observed_w["battery"],
         )
@@ -1063,6 +1272,10 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             max_soc_action=max_soc_action,
             device_contributions=device_contributions,
         )
+        self.runtime_store.save_runtime_snapshot(
+            saved_at=now,
+            payload=self._runtime_snapshot_payload(),
+        )
         if self.maintenance.enabled:
             self.runtime_store.save_maintenance_state(
                 self.controller.maintenance_state_snapshot()
@@ -1139,6 +1352,7 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         entity_config: ActuatorEntityConfig,
         actual_power_w: float | None,
         last_write_monotonic: float | None,
+        last_write_iso: str | None,
         last_command_target_w: float | None,
         last_command_observed_w: float | None,
     ) -> ActuatorInputs | None:
@@ -1147,8 +1361,11 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             return None
 
         seconds_since_last_write = None
-        if last_write_monotonic is not None:
-            seconds_since_last_write = time.monotonic() - last_write_monotonic
+        if last_write_monotonic is not None or last_write_iso is not None:
+            seconds_since_last_write = self._seconds_since_event(
+                last_write_monotonic=last_write_monotonic,
+                last_write_iso=last_write_iso,
+            )
 
         command_mismatch_reason = None
         command_mismatch_w = None
@@ -1191,6 +1408,7 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             entity_config=self.entities.trim_actuator,
             actual_power_w=trim_actual_power_w,
             last_write_monotonic=self.last_write_monotonic["inverter"],
+            last_write_iso=self.last_write_iso["inverter"],
             last_command_target_w=self.last_command_target_w["inverter"],
             last_command_observed_w=self.last_command_observed_w["inverter"],
         )
@@ -1249,9 +1467,11 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             self.last_soc_rail_observed_pct[label] = current_value
             return "aligned"
 
-        now_monotonic = time.monotonic()
+        seconds_since_last_write = self._seconds_since_event(
+            last_write_monotonic=self.last_soc_rail_write_monotonic[label],
+            last_write_iso=self.last_soc_rail_write_iso[label],
+        )
         last_target = self.last_soc_rail_target_pct[label]
-        last_write_monotonic = self.last_soc_rail_write_monotonic[label]
         last_observed = self.last_soc_rail_observed_pct[label]
 
         service = _default_power_control_service(entity_id)
@@ -1266,8 +1486,8 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             if current_value != last_observed and current_value is not None:
                 write_reason = "reconcile_drift"
             elif (
-                last_write_monotonic is not None
-                and now_monotonic - last_write_monotonic < _SOC_RAIL_RETRY_INTERVAL_S
+                seconds_since_last_write is not None
+                and seconds_since_last_write < _SOC_RAIL_RETRY_INTERVAL_S
             ):
                 self.last_soc_rail_observed_pct[label] = current_value
                 return "pending"
@@ -1276,7 +1496,8 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
 
         self.call_service(service, entity_id=entity_id, value=desired_value)
         self.last_soc_rail_target_pct[label] = desired_value
-        self.last_soc_rail_write_monotonic[label] = now_monotonic
+        self.last_soc_rail_write_monotonic[label] = time.monotonic()
+        self.last_soc_rail_write_iso[label] = dt.datetime.now(dt.UTC).isoformat()
         self.last_soc_rail_observed_pct[label] = current_value
         self._emit_thermal_log(
             f"Updated {label} rail"
@@ -1315,6 +1536,51 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         self.last_write_monotonic[entity_config.slot] = now_monotonic
         self.last_write_iso[entity_config.slot] = now_iso
         self.last_command_target_w[entity_config.slot] = actuator_result.target_limit_w
+
+    def _seconds_since_event(
+        self,
+        *,
+        last_write_monotonic: float | None = None,
+        last_write_iso: str | None,
+    ) -> float | None:
+        if last_write_monotonic is not None:
+            return max(0.0, time.monotonic() - last_write_monotonic)
+        if last_write_iso is None:
+            return None
+        try:
+            last_write_at = dt.datetime.fromisoformat(last_write_iso)
+        except ValueError:
+            return None
+        if last_write_at.tzinfo is None:
+            last_write_at = last_write_at.replace(tzinfo=dt.UTC)
+        return max(
+            0.0,
+            (
+                dt.datetime.now(dt.UTC) - last_write_at.astimezone(dt.UTC)
+            ).total_seconds(),
+        )
+
+    def _runtime_snapshot_payload(self) -> dict[str, object]:
+        return {
+            "controller": self.controller.runtime_state_snapshot(),
+            "actuators": {
+                slot: {
+                    "last_write_at": self.last_write_iso[slot],
+                    "last_command_target_w": self.last_command_target_w[slot],
+                    "last_command_observed_w": self.last_command_observed_w[slot],
+                }
+                for slot in ("battery", "inverter")
+            },
+            "soc_rails": {
+                label: {
+                    "last_target_pct": self.last_soc_rail_target_pct[label],
+                    "last_write_at": self.last_soc_rail_write_iso[label],
+                    "last_observed_pct": self.last_soc_rail_observed_pct[label],
+                }
+                for label in ("min_soc", "max_soc")
+            },
+            "devices": self.device_feed_forward.runtime_state_snapshot(),
+        }
 
     def _handle_missing_required_state(
         self,

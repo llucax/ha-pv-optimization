@@ -23,6 +23,27 @@ class TimeWeightedSeries:
     def sample_count(self) -> int:
         return len(self._samples)
 
+    def latest_timestamp(self) -> datetime | None:
+        if not self._samples:
+            return None
+        return self._samples[-1].timestamp
+
+    def samples(self) -> tuple[TimedValue, ...]:
+        return tuple(self._samples)
+
+    def load_samples(self, samples: tuple[TimedValue, ...]) -> None:
+        restored_samples: deque[TimedValue] = deque()
+        for sample in samples:
+            if restored_samples and sample.timestamp < restored_samples[-1].timestamp:
+                raise ValueError("TimeWeightedSeries samples must be monotonic")
+            if restored_samples and sample.timestamp == restored_samples[-1].timestamp:
+                restored_samples[-1] = sample
+            else:
+                restored_samples.append(sample)
+        self._samples = restored_samples
+        if self._samples:
+            self._prune(reference_time=self._samples[-1].timestamp)
+
     def update(self, timestamp: datetime, value: float) -> None:
         if self._samples and timestamp < self._samples[-1].timestamp:
             raise ValueError("TimeWeightedSeries samples must be monotonic")

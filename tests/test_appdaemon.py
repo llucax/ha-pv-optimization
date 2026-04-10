@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import ha_pv_optimization.appdaemon as appdaemon_module
 from ha_pv_optimization.appdaemon import HaPvOptimization
+from ha_pv_optimization.storage import RuntimeStateStore
 
 
 class FakeHaPvOptimization(HaPvOptimization):
@@ -49,6 +51,17 @@ class FakeHaPvOptimization(HaPvOptimization):
 
     def set_state(self, entity_id: str, state: Any, attributes: dict[str, Any]) -> None:
         self.state_updates.append((entity_id, state, attributes))
+
+
+class _FixedDateTime(datetime):
+    current = datetime(2026, 4, 10, 12, 0, tzinfo=UTC)
+
+    @classmethod
+    def now(cls, tz: Any = None) -> datetime:
+        current = cls.current
+        if tz is None:
+            return current.replace(tzinfo=None)
+        return current.astimezone(tz)
 
 
 def _warning_messages(app: FakeHaPvOptimization) -> list[str]:
@@ -1028,6 +1041,462 @@ def test_maintenance_state_is_persisted(tmp_path: Path) -> None:
 
     reloaded_app.initialize()
     assert reloaded_app.controller.maintenance_active is True
+
+
+def test_signal_histories_are_restored_on_restart(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    monkeypatch.setattr(appdaemon_module.dt, "datetime", _FixedDateTime)
+    db_path = tmp_path / "var" / "runtime.sqlite3"
+    _FixedDateTime.current = datetime(2026, 4, 10, 12, 0, tzinfo=UTC)
+    app = FakeHaPvOptimization(
+        args={
+            "consumption_entity": "sensor.load",
+            "battery_temperature_entity": "sensor.battery_temp",
+            "battery_power_control_entity": "number.battery_limit",
+            "maintenance_storage_path": str(db_path),
+            "dry_run": True,
+        },
+        state_map={
+            "sensor.load": "100",
+            "sensor.battery_temp": "10",
+            "number.battery_limit": {
+                "state": "0",
+                "attributes": {"min": 0, "max": 800, "step": 50},
+            },
+        },
+    )
+
+    app.initialize()
+
+    app.state_map["sensor.battery_temp"] = "20"
+    _FixedDateTime.current = datetime(2026, 4, 10, 12, 15, tzinfo=UTC)
+    app._record_signal_sample(
+        history_key="battery_temperature",
+        entity_id="sensor.battery_temp",
+        timestamp=_FixedDateTime.current,
+    )
+
+    app.state_map["sensor.load"] = "200"
+    _FixedDateTime.current = datetime(2026, 4, 10, 12, 29, 50, tzinfo=UTC)
+    app._record_signal_sample(
+        history_key="consumption",
+        entity_id="sensor.load",
+        timestamp=_FixedDateTime.current,
+    )
+
+    app.state_map["sensor.load"] = "400"
+    _FixedDateTime.current = datetime(2026, 4, 10, 12, 29, 55, tzinfo=UTC)
+    app._record_signal_sample(
+        history_key="consumption",
+        entity_id="sensor.load",
+        timestamp=_FixedDateTime.current,
+    )
+
+    restart_at = datetime(2026, 4, 10, 12, 30, tzinfo=UTC)
+    expected_metrics = app._time_weighted_metrics(restart_at)
+
+    _FixedDateTime.current = restart_at
+    reloaded_app = FakeHaPvOptimization(
+        args={
+            "consumption_entity": "sensor.load",
+            "battery_temperature_entity": "sensor.battery_temp",
+            "battery_power_control_entity": "number.battery_limit",
+            "maintenance_storage_path": str(db_path),
+            "dry_run": True,
+        },
+        state_map={
+            "sensor.load": "400",
+            "sensor.battery_temp": "20",
+            "number.battery_limit": {
+                "state": "0",
+                "attributes": {"min": 0, "max": 800, "step": 50},
+            },
+        },
+    )
+
+    reloaded_app.initialize()
+    restored_metrics = reloaded_app._time_weighted_metrics(restart_at)
+
+    assert restored_metrics == expected_metrics
+
+
+def test_stale_signal_histories_are_discarded_per_history(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(appdaemon_module.dt, "datetime", _FixedDateTime)
+    db_path = tmp_path / "var" / "runtime.sqlite3"
+    _FixedDateTime.current = datetime(2026, 4, 10, 12, 0, tzinfo=UTC)
+    app = FakeHaPvOptimization(
+        args={
+            "consumption_entity": "sensor.load",
+            "battery_temperature_entity": "sensor.battery_temp",
+            "battery_power_control_entity": "number.battery_limit",
+            "maintenance_storage_path": str(db_path),
+            "dry_run": True,
+        },
+        state_map={
+            "sensor.load": "100",
+            "sensor.battery_temp": "10",
+            "number.battery_limit": {
+                "state": "0",
+                "attributes": {"min": 0, "max": 800, "step": 50},
+            },
+        },
+    )
+
+    app.initialize()
+
+    app.state_map["sensor.load"] = "200"
+    _FixedDateTime.current = datetime(2026, 4, 10, 12, 0, 5, tzinfo=UTC)
+    app._record_signal_sample(
+        history_key="consumption",
+        entity_id="sensor.load",
+        timestamp=_FixedDateTime.current,
+    )
+
+    _FixedDateTime.current = datetime(2026, 4, 10, 12, 0, 40, tzinfo=UTC)
+    reloaded_app = FakeHaPvOptimization(
+        args={
+            "consumption_entity": "sensor.load",
+            "battery_temperature_entity": "sensor.battery_temp",
+            "battery_power_control_entity": "number.battery_limit",
+            "maintenance_storage_path": str(db_path),
+            "dry_run": True,
+        },
+        state_map={
+            "sensor.load": "300",
+            "sensor.battery_temp": "10",
+            "number.battery_limit": {
+                "state": "0",
+                "attributes": {"min": 0, "max": 800, "step": 50},
+            },
+        },
+    )
+
+    reloaded_app.initialize()
+
+    assert reloaded_app.signal_histories["consumption"].sample_count == 1
+    assert reloaded_app.signal_histories["battery_temperature"].sample_count == 2
+    persisted_histories = reloaded_app.runtime_store.load_signal_histories()
+    assert persisted_histories["consumption"][-1].value == 300.0
+
+
+def test_actuator_min_write_interval_is_preserved_across_restart(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(appdaemon_module.dt, "datetime", _FixedDateTime)
+    db_path = tmp_path / "var" / "runtime.sqlite3"
+    _FixedDateTime.current = datetime(2026, 4, 10, 12, 0, tzinfo=UTC)
+    app = FakeHaPvOptimization(
+        args={
+            "consumption_entity": "sensor.load",
+            "battery_power_control_entity": "number.battery_limit",
+            "battery_power_step_w": 50,
+            "battery_min_change_w": 50,
+            "battery_min_write_interval_s": 60,
+            "battery_max_increase_per_cycle_w": 500,
+            "battery_max_decrease_per_cycle_w": 500,
+            "battery_emergency_max_decrease_per_cycle_w": 500,
+            "battery_max_output_w": 800,
+            "maintenance_storage_path": str(db_path),
+            "dry_run": False,
+        },
+        state_map={
+            "sensor.load": "200",
+            "number.battery_limit": {
+                "state": "0",
+                "attributes": {"min": 0, "max": 800, "step": 50},
+            },
+        },
+    )
+
+    app.initialize()
+    app._control_tick({})
+    assert app.service_calls == [
+        ("number/set_value", {"entity_id": "number.battery_limit", "value": 100})
+    ]
+
+    _FixedDateTime.current = datetime(2026, 4, 10, 12, 0, 30, tzinfo=UTC)
+    reloaded_app = FakeHaPvOptimization(
+        args={
+            "consumption_entity": "sensor.load",
+            "battery_power_control_entity": "number.battery_limit",
+            "battery_power_step_w": 50,
+            "battery_min_change_w": 50,
+            "battery_min_write_interval_s": 60,
+            "battery_max_increase_per_cycle_w": 500,
+            "battery_max_decrease_per_cycle_w": 500,
+            "battery_emergency_max_decrease_per_cycle_w": 500,
+            "battery_max_output_w": 800,
+            "maintenance_storage_path": str(db_path),
+            "dry_run": False,
+        },
+        state_map={
+            "sensor.load": "200",
+            "number.battery_limit": {
+                "state": "0",
+                "attributes": {"min": 0, "max": 800, "step": 50},
+            },
+        },
+    )
+
+    reloaded_app.initialize()
+    reloaded_app._control_tick({})
+
+    assert reloaded_app.service_calls == []
+    status_update = _latest_status_update(reloaded_app)
+    assert status_update[2]["battery_action"] == "skip"
+    assert status_update[2]["battery_reason"] == "min_write_interval"
+
+
+def test_soc_rail_retry_window_is_preserved_across_restart(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(appdaemon_module.dt, "datetime", _FixedDateTime)
+    db_path = tmp_path / "var" / "runtime.sqlite3"
+    _FixedDateTime.current = datetime(2026, 4, 10, 12, 0, tzinfo=UTC)
+    app = FakeHaPvOptimization(
+        args={
+            "consumption_entity": "sensor.load",
+            "battery_power_control_entity": "number.battery_limit",
+            "battery_temperature_entity": "sensor.battery_temp",
+            "battery_discharge_limit_entity": "number.discharge_limit",
+            "battery_charging_limit_entity": "number.charging_limit",
+            "battery_max_output_w": 800,
+            "battery_power_step_w": 50,
+            "battery_min_change_w": 50,
+            "battery_min_write_interval_s": 0,
+            "battery_max_increase_per_cycle_w": 500,
+            "battery_max_decrease_per_cycle_w": 500,
+            "battery_emergency_max_decrease_per_cycle_w": 500,
+            "thermal_hot_enter_t30_c": 35,
+            "thermal_hot_exit_t30_c": 33,
+            "thermal_hot_exit_hold_s": 60,
+            "thermal_hot_min_soc_pct": 15,
+            "thermal_hot_max_soc_pct": 90,
+            "thermal_hot_cap_limit_w": 800,
+            "maintenance_storage_path": str(db_path),
+            "dry_run": False,
+        },
+        state_map={
+            "sensor.load": "200",
+            "sensor.battery_temp": "36",
+            "number.battery_limit": {
+                "state": "100",
+                "attributes": {"min": 0, "max": 800, "step": 50},
+            },
+            "number.discharge_limit": {
+                "state": "10",
+                "attributes": {"min": 0, "max": 30, "step": 1},
+            },
+            "number.charging_limit": {
+                "state": "100",
+                "attributes": {"min": 70, "max": 100, "step": 1},
+            },
+        },
+    )
+
+    app.initialize()
+    app._control_tick({})
+    assert len(_rail_service_calls(app)) == 2
+
+    _FixedDateTime.current = datetime(2026, 4, 10, 12, 0, 30, tzinfo=UTC)
+    reloaded_app = FakeHaPvOptimization(
+        args={
+            "consumption_entity": "sensor.load",
+            "battery_power_control_entity": "number.battery_limit",
+            "battery_temperature_entity": "sensor.battery_temp",
+            "battery_discharge_limit_entity": "number.discharge_limit",
+            "battery_charging_limit_entity": "number.charging_limit",
+            "battery_max_output_w": 800,
+            "battery_power_step_w": 50,
+            "battery_min_change_w": 50,
+            "battery_min_write_interval_s": 0,
+            "battery_max_increase_per_cycle_w": 500,
+            "battery_max_decrease_per_cycle_w": 500,
+            "battery_emergency_max_decrease_per_cycle_w": 500,
+            "thermal_hot_enter_t30_c": 35,
+            "thermal_hot_exit_t30_c": 33,
+            "thermal_hot_exit_hold_s": 60,
+            "thermal_hot_min_soc_pct": 15,
+            "thermal_hot_max_soc_pct": 90,
+            "thermal_hot_cap_limit_w": 800,
+            "maintenance_storage_path": str(db_path),
+            "dry_run": False,
+        },
+        state_map={
+            "sensor.load": "200",
+            "sensor.battery_temp": "36",
+            "number.battery_limit": {
+                "state": "100",
+                "attributes": {"min": 0, "max": 800, "step": 50},
+            },
+            "number.discharge_limit": {
+                "state": "10",
+                "attributes": {"min": 0, "max": 30, "step": 1},
+            },
+            "number.charging_limit": {
+                "state": "100",
+                "attributes": {"min": 70, "max": 100, "step": 1},
+            },
+        },
+    )
+
+    reloaded_app.initialize()
+    reloaded_app._control_tick({})
+
+    assert _rail_service_calls(reloaded_app) == []
+    status_update = _latest_status_update(reloaded_app)
+    assert status_update[2]["battery_min_soc_action"] == "pending"
+    assert status_update[2]["battery_max_soc_action"] == "pending"
+
+
+def test_thermal_clear_hold_is_preserved_across_restart(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(appdaemon_module.dt, "datetime", _FixedDateTime)
+    db_path = tmp_path / "var" / "runtime.sqlite3"
+    store = RuntimeStateStore(db_path)
+    store.save_signal_sample(
+        "battery_temperature",
+        datetime(2026, 4, 10, 11, 31, tzinfo=UTC),
+        32.0,
+        max_history_s=7200.0,
+    )
+    store.save_signal_sample(
+        "battery_temperature",
+        datetime(2026, 4, 10, 12, 0, tzinfo=UTC),
+        32.0,
+        max_history_s=7200.0,
+    )
+    store.save_runtime_snapshot(
+        saved_at=datetime(2026, 4, 10, 12, 0, 30, tzinfo=UTC),
+        payload={
+            "controller": {
+                "thermal_state": "HOT",
+                "thermal_clear_elapsed_s": 30.0,
+            }
+        },
+    )
+
+    _FixedDateTime.current = datetime(2026, 4, 10, 12, 1, tzinfo=UTC)
+    reloaded_app = FakeHaPvOptimization(
+        args={
+            "consumption_entity": "sensor.load",
+            "battery_power_control_entity": "number.battery_limit",
+            "battery_temperature_entity": "sensor.battery_temp",
+            "battery_max_output_w": 800,
+            "thermal_hot_enter_t30_c": 35,
+            "thermal_hot_exit_t30_c": 33,
+            "thermal_hot_exit_hold_s": 60,
+            "maintenance_storage_path": str(db_path),
+            "dry_run": True,
+        },
+        state_map={
+            "sensor.load": "200",
+            "sensor.battery_temp": "32",
+            "number.battery_limit": {
+                "state": "100",
+                "attributes": {"min": 0, "max": 800, "step": 50},
+            },
+        },
+    )
+
+    reloaded_app.initialize()
+    reloaded_app._control_tick({})
+
+    status_update = _latest_status_update(reloaded_app)
+    assert status_update[2]["thermal_state"] == "NORMAL"
+    assert status_update[2]["thermal_reason"] == "normal"
+
+
+def test_device_feed_forward_state_is_preserved_across_restart(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(appdaemon_module.dt, "datetime", _FixedDateTime)
+    db_path = tmp_path / "var" / "runtime.sqlite3"
+    site_config_path = tmp_path / "site.yaml"
+    site_config_path.write_text(
+        "consumption:\n"
+        "  entity: sensor.site_load\n"
+        "battery:\n"
+        "  power_control_entity: number.site_battery_limit\n"
+        "  max_output_w: 800\n"
+        "inverter:\n"
+        "  power_control_entity: number.site_inverter_limit\n"
+        "  max_output_w: 800\n"
+        "devices:\n"
+        "  microwave:\n"
+        "    kind: burst_high_power\n"
+        "    entity_id: sensor.outlet_microwave_power\n"
+        "    high_threshold_w: 300\n"
+        "    enter_persistence_s: 2\n"
+        "    exit_persistence_s: 2\n"
+        "    ff_gain: 0.95\n"
+        "    ff_hold_s: 90\n",
+        encoding="utf-8",
+    )
+    _FixedDateTime.current = datetime(2026, 4, 10, 12, 0, tzinfo=UTC)
+    app = FakeHaPvOptimization(
+        args={
+            "site_config_path": str(site_config_path),
+            "maintenance_storage_path": str(db_path),
+            "dry_run": True,
+        },
+        state_map={
+            "sensor.site_load": "200",
+            "sensor.outlet_microwave_power": "1400",
+            "number.site_battery_limit": {
+                "state": "0",
+                "attributes": {"min": 0, "max": 800, "step": 50},
+            },
+            "number.site_inverter_limit": {
+                "state": "0",
+                "attributes": {"min": 0, "max": 800, "step": 25},
+            },
+        },
+    )
+
+    app.initialize()
+    app._control_tick({})
+    _FixedDateTime.current = datetime(2026, 4, 10, 12, 0, 3, tzinfo=UTC)
+    app._control_tick({})
+    status_update = _latest_status_update(app)
+    assert status_update[2]["device_feed_forward_w"] > 0.0
+
+    _FixedDateTime.current = datetime(2026, 4, 10, 12, 0, 4, tzinfo=UTC)
+    reloaded_app = FakeHaPvOptimization(
+        args={
+            "site_config_path": str(site_config_path),
+            "maintenance_storage_path": str(db_path),
+            "dry_run": True,
+        },
+        state_map={
+            "sensor.site_load": "200",
+            "sensor.outlet_microwave_power": "1400",
+            "number.site_battery_limit": {
+                "state": "0",
+                "attributes": {"min": 0, "max": 800, "step": 50},
+            },
+            "number.site_inverter_limit": {
+                "state": "0",
+                "attributes": {"min": 0, "max": 800, "step": 25},
+            },
+        },
+    )
+
+    reloaded_app.initialize()
+    reloaded_app._control_tick({})
+
+    status_update = _latest_status_update(reloaded_app)
+    assert status_update[2]["device_feed_forward_w"] > 0.0
+    assert "microwave" in status_update[2]["active_device_feed_forward"]
 
 
 def test_maintenance_status_fields_are_published() -> None:

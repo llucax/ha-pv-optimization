@@ -237,7 +237,7 @@ Thermal/SOC diagnostics are also published, including `thermal_state`, `desired_
 Monthly maintenance is configured through the typed `maintenance:` section in `site.yaml`.
 
 - `enabled` - turns the maintenance cycle on or off.
-- `storage_path` - SQLite path used to persist maintenance state across restarts.
+- `storage_path` - SQLite path used to persist runtime state across restarts, including maintenance state and recent signal history needed to resume temperature and other time-weighted metrics.
 - `full_charge_threshold_pct` - SOC threshold that counts as full charge; default `99`.
 - `full_charge_hold_s` - how long SOC must stay above the threshold to count as a successful maintenance charge; default `1800`.
 - `max_age_days` - how old the last successful full charge may be before maintenance becomes due; default `30`.
