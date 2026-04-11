@@ -1411,7 +1411,7 @@ def test_thermal_clear_hold_is_preserved_across_restart(
     store = RuntimeStateStore(db_path)
     store.save_runtime_snapshot(
         saved_at=datetime(2026, 4, 10, 12, 0, 30, tzinfo=UTC),
-        payload={
+        snapshot={
             "controller": {
                 "thermal_state": "HOT",
                 "thermal_clear_elapsed_s": 30.0,

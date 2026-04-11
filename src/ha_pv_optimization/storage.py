@@ -57,15 +57,13 @@ class RuntimeStateStore:
         )
 
     def load_runtime_snapshot(self) -> tuple[datetime, dict[str, Any]] | None:
-        payload = self._load_json(self._runtime_snapshot_path())
-        if payload is None:
+        document = self._load_json(self._runtime_snapshot_path())
+        if document is None:
             return None
 
         try:
-            saved_at = self._required_datetime(payload.get("saved_at"))
-            snapshot = payload.get("payload")
-            if not isinstance(snapshot, dict):
-                raise ValueError("payload must be a mapping")
+            saved_at = self._required_datetime(document.get("saved_at"))
+            snapshot = self._runtime_snapshot_from_document(document)
         except (TypeError, ValueError) as exc:
             self._warn(
                 "Ignoring malformed runtime snapshot file"
@@ -79,15 +77,14 @@ class RuntimeStateStore:
         self,
         *,
         saved_at: datetime,
-        payload: dict[str, Any],
+        snapshot: dict[str, Any],
     ) -> None:
+        document = dict(snapshot)
+        document["format_version"] = 1
+        document["saved_at"] = saved_at.astimezone(UTC).isoformat()
         self._save_json_atomic(
             self._runtime_snapshot_path(),
-            {
-                "format_version": 1,
-                "saved_at": saved_at.astimezone(UTC).isoformat(),
-                "payload": payload,
-            },
+            document,
         )
 
     def _default_maintenance_state(self) -> MaintenanceStateSnapshot:
@@ -102,6 +99,19 @@ class RuntimeStateStore:
 
     def _runtime_snapshot_path(self) -> Path:
         return self.dir_path / "control_runtime_state.json"
+
+    def _runtime_snapshot_from_document(
+        self,
+        document: dict[str, Any],
+    ) -> dict[str, Any]:
+        if "payload" in document:
+            raise ValueError("payload wrapper is not supported")
+
+        return {
+            key: value
+            for key, value in document.items()
+            if key not in {"format_version", "saved_at"}
+        }
 
     def _load_json(self, path: Path) -> dict[str, Any] | None:
         self._ensure_dir()

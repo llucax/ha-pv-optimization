@@ -1369,7 +1369,7 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         )
         self.runtime_store.save_runtime_snapshot(
             saved_at=now,
-            payload=self._runtime_snapshot_payload(),
+            snapshot=self._runtime_snapshot_payload(),
         )
         maintenance_snapshot = self.controller.maintenance_state_snapshot()
         if (
