@@ -93,9 +93,10 @@ It includes:
 - `battery_sensors` - SOC, temperature, min/max-SOC rail, and optional heating/alarm entities
 - `inverter` - inverter actuator entity mapping and constraints
 - `control` - controller tuning values
+- `persistence` - local runtime-state directory for atomic JSON files
 - `battery_policy` - current battery-side reserve/derate policy values
 - `thermal` - thermal-state thresholds and the desired SOC/cap outputs for `NORMAL`, `HOT`, and `VERY_HOT`
-- `maintenance` - monthly full-charge maintenance rules and SQLite state path
+- `maintenance` - monthly full-charge maintenance rules
 - `devices` - per-device feed-forward models
 - `availability` - expected-missing warning tuning
 - `logging` - debug entity prefix and optional cycle-log routing

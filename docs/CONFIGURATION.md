@@ -232,12 +232,20 @@ Current mismatch classification is heuristic:
 
 Thermal/SOC diagnostics are also published, including `thermal_state`, `desired_min_soc_pct`, `desired_max_soc_pct`, `battery_cap_limit_w`, `battery_min_soc_action`, and `battery_max_soc_action`.
 
+## Persistence
+
+Controller-owned restart state is configured through the typed `persistence:` section in `site.yaml`.
+
+- `dir` - directory used for atomic JSON runtime state files; default `/conf/var`.
+
+The controller currently stores `maintenance_state.json` and `control_runtime_state.json` in that directory.
+Recent signal histories are not persisted locally anymore; on startup the controller asks Home Assistant recorder for the short lookback windows needed to rebuild the time-weighted series.
+
 ## Maintenance
 
 Monthly maintenance is configured through the typed `maintenance:` section in `site.yaml`.
 
 - `enabled` - turns the maintenance cycle on or off.
-- `storage_path` - SQLite path used to persist runtime state across restarts, including maintenance state and recent signal history needed to resume temperature and other time-weighted metrics.
 - `full_charge_threshold_pct` - SOC threshold that counts as full charge; default `99`.
 - `full_charge_hold_s` - how long SOC must stay above the threshold to count as a successful maintenance charge; default `1800`.
 - `max_age_days` - how old the last successful full charge may be before maintenance becomes due; default `30`.
@@ -267,6 +275,7 @@ The generic example currently includes these keys:
 - `module`
 - `class`
 - `site_config_path`
+- `persistence_dir`
 - `consumption_entity`
 - `net_consumption_entity`
 - `battery_power_control_entity`
