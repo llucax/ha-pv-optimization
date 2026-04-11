@@ -1,16 +1,15 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 
 from ha_pv_optimization.models import MaintenanceStateSnapshot
-from ha_pv_optimization.signals import TimedValue
 from ha_pv_optimization.storage import RuntimeStateStore
 
 
 def test_runtime_state_store_round_trips_maintenance_snapshot(tmp_path: Path) -> None:
-    db_path = tmp_path / "var" / "state.sqlite3"
-    store = RuntimeStateStore(db_path)
+    state_dir = tmp_path / "var"
+    store = RuntimeStateStore(state_dir)
     snapshot = MaintenanceStateSnapshot(
         maintenance_active=True,
         full_charge_elapsed_s=123.0,
@@ -23,44 +22,9 @@ def test_runtime_state_store_round_trips_maintenance_snapshot(tmp_path: Path) ->
     assert loaded == snapshot
 
 
-def test_runtime_state_store_round_trips_signal_histories(tmp_path: Path) -> None:
-    db_path = tmp_path / "var" / "state.sqlite3"
-    store = RuntimeStateStore(db_path)
-    start = datetime(2026, 4, 3, 12, 0, tzinfo=UTC)
-
-    store.save_signal_sample(
-        "consumption",
-        start,
-        120.0,
-        max_history_s=3600.0,
-    )
-    store.save_signal_sample(
-        "consumption",
-        start + timedelta(seconds=30),
-        240.0,
-        max_history_s=3600.0,
-    )
-    store.save_signal_sample(
-        "battery_temperature",
-        start + timedelta(minutes=5),
-        21.5,
-        max_history_s=7200.0,
-    )
-
-    loaded = store.load_signal_histories()
-
-    assert loaded == {
-        "battery_temperature": (TimedValue(start + timedelta(minutes=5), 21.5),),
-        "consumption": (
-            TimedValue(start, 120.0),
-            TimedValue(start + timedelta(seconds=30), 240.0),
-        ),
-    }
-
-
 def test_runtime_state_store_round_trips_runtime_snapshot(tmp_path: Path) -> None:
-    db_path = tmp_path / "var" / "state.sqlite3"
-    store = RuntimeStateStore(db_path)
+    state_dir = tmp_path / "var"
+    store = RuntimeStateStore(state_dir)
     saved_at = datetime(2026, 4, 3, 12, 0, tzinfo=UTC)
     snapshot = {
         "controller": {
@@ -80,3 +44,36 @@ def test_runtime_state_store_round_trips_runtime_snapshot(tmp_path: Path) -> Non
     loaded = store.load_runtime_snapshot()
 
     assert loaded == (saved_at, snapshot)
+
+
+def test_malformed_maintenance_state_falls_back_to_defaults(tmp_path: Path) -> None:
+    warnings: list[str] = []
+    state_dir = tmp_path / "var"
+    state_dir.mkdir(parents=True)
+    (state_dir / "maintenance_state.json").write_text("{oops", encoding="utf-8")
+
+    store = RuntimeStateStore(state_dir, on_warning=warnings.append)
+
+    loaded = store.load_maintenance_state()
+
+    assert loaded == MaintenanceStateSnapshot(
+        maintenance_active=False,
+        full_charge_elapsed_s=0.0,
+        last_full_charge_at=None,
+    )
+    assert warnings
+
+
+def test_malformed_runtime_snapshot_is_ignored(tmp_path: Path) -> None:
+    warnings: list[str] = []
+    state_dir = tmp_path / "var"
+    state_dir.mkdir(parents=True)
+    (state_dir / "control_runtime_state.json").write_text(
+        '{"saved_at":"nope","payload":[]}',
+        encoding="utf-8",
+    )
+
+    store = RuntimeStateStore(state_dir, on_warning=warnings.append)
+
+    assert store.load_runtime_snapshot() is None
+    assert warnings

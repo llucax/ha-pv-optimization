@@ -547,9 +547,22 @@ class ThermalSiteConfig:
 
 
 @dataclass(frozen=True)
+class PersistenceSiteConfig:
+    dir: str = "/conf/var"
+
+    @classmethod
+    def from_mapping(
+        cls,
+        mapping: dict[str, Any] | None,
+    ) -> PersistenceSiteConfig:
+        if mapping is None:
+            return cls()
+        return cls(dir=_optional_str(mapping, "dir") or "/conf/var")
+
+
+@dataclass(frozen=True)
 class MaintenanceSiteConfig:
     enabled: bool = True
-    storage_path: str = "/conf/var/noah_controller.sqlite3"
     full_charge_threshold_pct: float = 99.0
     full_charge_hold_s: float = 1800.0
     max_age_days: float = 30.0
@@ -569,8 +582,6 @@ class MaintenanceSiteConfig:
         enabled = _optional_bool(mapping, "enabled")
         return cls(
             enabled=True if enabled is None else enabled,
-            storage_path=_optional_str(mapping, "storage_path")
-            or "/conf/var/noah_controller.sqlite3",
             full_charge_threshold_pct=_with_default(
                 _optional_float(mapping, "full_charge_threshold_pct"),
                 99.0,
@@ -615,6 +626,7 @@ class SiteConfig:
     )
     inverter: ActuatorSiteConfig | None = None
     control: ControlSiteConfig = field(default_factory=ControlSiteConfig)
+    persistence: PersistenceSiteConfig = field(default_factory=PersistenceSiteConfig)
     battery_policy: BatteryPolicySiteConfig = field(
         default_factory=BatteryPolicySiteConfig
     )
@@ -645,6 +657,9 @@ class SiteConfig:
             ),
             control=ControlSiteConfig.from_mapping(
                 _optional_mapping(mapping.get("control"), context="control")
+            ),
+            persistence=PersistenceSiteConfig.from_mapping(
+                _optional_mapping(mapping.get("persistence"), context="persistence")
             ),
             battery_policy=BatteryPolicySiteConfig.from_mapping(
                 _optional_mapping(
@@ -758,6 +773,7 @@ def site_config_to_appdaemon_args(site_config: SiteConfig) -> dict[str, Any]:
         "visible_oversupply_max_cut_w": (
             site_config.control.visible_oversupply_max_cut_w
         ),
+        "persistence_dir": site_config.persistence.dir,
         "soc_stop_buffer_pct": site_config.battery_policy.soc_stop_buffer_pct,
         "soc_full_power_buffer_pct": (
             site_config.battery_policy.soc_full_power_buffer_pct
@@ -781,7 +797,6 @@ def site_config_to_appdaemon_args(site_config: SiteConfig) -> dict[str, Any]:
         "thermal_very_hot_max_soc_pct": site_config.thermal.very_hot_max_soc_pct,
         "thermal_very_hot_cap_limit_w": site_config.thermal.very_hot_cap_limit_w,
         "maintenance_enabled": site_config.maintenance.enabled,
-        "maintenance_storage_path": site_config.maintenance.storage_path,
         "maintenance_full_charge_threshold_pct": (
             site_config.maintenance.full_charge_threshold_pct
         ),

@@ -1,175 +1,79 @@
 from __future__ import annotations
 
 import json
-import sqlite3
-from datetime import UTC, datetime, timedelta
+import os
+import tempfile
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from .models import MaintenanceStateSnapshot
-from .signals import TimedValue
 
 
 class RuntimeStateStore:
-    def __init__(self, path: Path) -> None:
-        self.path = path
+    def __init__(
+        self,
+        dir_path: Path,
+        *,
+        on_warning: Callable[[str], None] | None = None,
+    ) -> None:
+        self.dir_path = dir_path
+        self.on_warning = on_warning
 
     def load_maintenance_state(self) -> MaintenanceStateSnapshot:
-        self._ensure_parent_dir()
-        with sqlite3.connect(self.path) as connection:
-            self._ensure_schema(connection)
-            row = connection.execute(
-                """
-                SELECT maintenance_active, full_charge_elapsed_s, last_full_charge_at
-                FROM maintenance_state
-                WHERE id = 1
-                """
-            ).fetchone()
+        payload = self._load_json(self._maintenance_state_path())
+        if payload is None:
+            return self._default_maintenance_state()
 
-        if row is None:
-            return MaintenanceStateSnapshot(
-                maintenance_active=False,
-                full_charge_elapsed_s=0.0,
-                last_full_charge_at=None,
+        try:
+            last_full_charge_at = self._optional_datetime(
+                payload.get("last_full_charge_at")
             )
-
-        last_full_charge_at = None
-        if row[2] is not None:
-            last_full_charge_at = datetime.fromisoformat(row[2]).astimezone(UTC)
-
-        return MaintenanceStateSnapshot(
-            maintenance_active=bool(row[0]),
-            full_charge_elapsed_s=float(row[1]),
-            last_full_charge_at=last_full_charge_at,
-        )
+            return MaintenanceStateSnapshot(
+                maintenance_active=bool(payload.get("maintenance_active", False)),
+                full_charge_elapsed_s=float(payload.get("full_charge_elapsed_s", 0.0)),
+                last_full_charge_at=last_full_charge_at,
+            )
+        except (TypeError, ValueError) as exc:
+            self._warn(
+                "Ignoring malformed maintenance state file"
+                f" {self._maintenance_state_path()}: {exc}"
+            )
+            return self._default_maintenance_state()
 
     def save_maintenance_state(self, snapshot: MaintenanceStateSnapshot) -> None:
-        self._ensure_parent_dir()
-        with sqlite3.connect(self.path) as connection:
-            self._ensure_schema(connection)
-            connection.execute(
-                """
-                INSERT INTO maintenance_state (
-                    id,
-                    maintenance_active,
-                    full_charge_elapsed_s,
-                    last_full_charge_at
-                ) VALUES (1, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    maintenance_active = excluded.maintenance_active,
-                    full_charge_elapsed_s = excluded.full_charge_elapsed_s,
-                    last_full_charge_at = excluded.last_full_charge_at
-                """,
-                (
-                    int(snapshot.maintenance_active),
-                    snapshot.full_charge_elapsed_s,
-                    None
-                    if snapshot.last_full_charge_at is None
-                    else snapshot.last_full_charge_at.astimezone(UTC).isoformat(),
+        self._save_json_atomic(
+            self._maintenance_state_path(),
+            {
+                "format_version": 1,
+                "saved_at": datetime.now(UTC).isoformat(),
+                "maintenance_active": snapshot.maintenance_active,
+                "full_charge_elapsed_s": snapshot.full_charge_elapsed_s,
+                "last_full_charge_at": self._encode_datetime(
+                    snapshot.last_full_charge_at
                 ),
-            )
-            connection.commit()
-
-    def load_signal_histories(self) -> dict[str, tuple[TimedValue, ...]]:
-        self._ensure_parent_dir()
-        with sqlite3.connect(self.path) as connection:
-            self._ensure_schema(connection)
-            rows = connection.execute(
-                """
-                SELECT history_key, recorded_at, value
-                FROM signal_history_samples
-                ORDER BY history_key, recorded_at
-                """
-            ).fetchall()
-
-        histories: dict[str, list[TimedValue]] = {}
-        for history_key, recorded_at, value in rows:
-            histories.setdefault(str(history_key), []).append(
-                TimedValue(
-                    timestamp=datetime.fromisoformat(recorded_at).astimezone(UTC),
-                    value=float(value),
-                )
-            )
-        return {
-            history_key: tuple(samples) for history_key, samples in histories.items()
-        }
-
-    def save_signal_sample(
-        self,
-        history_key: str,
-        timestamp: datetime,
-        value: float,
-        *,
-        max_history_s: float,
-    ) -> None:
-        if max_history_s <= 0:
-            raise ValueError("`max_history_s` must be positive")
-
-        self._ensure_parent_dir()
-        timestamp_utc = timestamp.astimezone(UTC)
-        recorded_at = timestamp_utc.isoformat()
-        cutoff_at = (timestamp_utc - timedelta(seconds=max_history_s)).isoformat()
-        with sqlite3.connect(self.path) as connection:
-            self._ensure_schema(connection)
-            connection.execute(
-                """
-                INSERT INTO signal_history_samples (history_key, recorded_at, value)
-                VALUES (?, ?, ?)
-                ON CONFLICT(history_key, recorded_at) DO UPDATE SET
-                    value = excluded.value
-                """,
-                (history_key, recorded_at, value),
-            )
-            anchor_row = connection.execute(
-                """
-                SELECT MAX(recorded_at)
-                FROM signal_history_samples
-                WHERE history_key = ?
-                  AND recorded_at <= ?
-                """,
-                (history_key, cutoff_at),
-            ).fetchone()
-            anchor_recorded_at = anchor_row[0]
-            if anchor_recorded_at is not None:
-                connection.execute(
-                    """
-                    DELETE FROM signal_history_samples
-                    WHERE history_key = ?
-                      AND recorded_at < ?
-                    """,
-                    (history_key, anchor_recorded_at),
-                )
-            connection.commit()
-
-    def clear_signal_history(self, history_key: str) -> None:
-        self._ensure_parent_dir()
-        with sqlite3.connect(self.path) as connection:
-            self._ensure_schema(connection)
-            connection.execute(
-                "DELETE FROM signal_history_samples WHERE history_key = ?",
-                (history_key,),
-            )
-            connection.commit()
+            },
+        )
 
     def load_runtime_snapshot(self) -> tuple[datetime, dict[str, Any]] | None:
-        self._ensure_parent_dir()
-        with sqlite3.connect(self.path) as connection:
-            self._ensure_schema(connection)
-            row = connection.execute(
-                """
-                SELECT saved_at, payload
-                FROM control_runtime_state
-                WHERE id = 1
-                """
-            ).fetchone()
-
-        if row is None:
+        payload = self._load_json(self._runtime_snapshot_path())
+        if payload is None:
             return None
 
-        return (
-            datetime.fromisoformat(row[0]).astimezone(UTC),
-            json.loads(row[1]),
-        )
+        try:
+            saved_at = self._required_datetime(payload.get("saved_at"))
+            snapshot = payload.get("payload")
+            if not isinstance(snapshot, dict):
+                raise ValueError("payload must be a mapping")
+        except (TypeError, ValueError) as exc:
+            self._warn(
+                "Ignoring malformed runtime snapshot file"
+                f" {self._runtime_snapshot_path()}: {exc}"
+            )
+            return None
+
+        return saved_at, snapshot
 
     def save_runtime_snapshot(
         self,
@@ -177,54 +81,102 @@ class RuntimeStateStore:
         saved_at: datetime,
         payload: dict[str, Any],
     ) -> None:
-        self._ensure_parent_dir()
-        with sqlite3.connect(self.path) as connection:
-            self._ensure_schema(connection)
-            connection.execute(
-                """
-                INSERT INTO control_runtime_state (id, saved_at, payload)
-                VALUES (1, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    saved_at = excluded.saved_at,
-                    payload = excluded.payload
-                """,
-                (
-                    saved_at.astimezone(UTC).isoformat(),
-                    json.dumps(payload, sort_keys=True),
-                ),
-            )
-            connection.commit()
+        self._save_json_atomic(
+            self._runtime_snapshot_path(),
+            {
+                "format_version": 1,
+                "saved_at": saved_at.astimezone(UTC).isoformat(),
+                "payload": payload,
+            },
+        )
 
-    def _ensure_parent_dir(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+    def _default_maintenance_state(self) -> MaintenanceStateSnapshot:
+        return MaintenanceStateSnapshot(
+            maintenance_active=False,
+            full_charge_elapsed_s=0.0,
+            last_full_charge_at=None,
+        )
 
-    def _ensure_schema(self, connection: sqlite3.Connection) -> None:
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS maintenance_state (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
-                maintenance_active INTEGER NOT NULL,
-                full_charge_elapsed_s REAL NOT NULL,
-                last_full_charge_at TEXT
+    def _maintenance_state_path(self) -> Path:
+        return self.dir_path / "maintenance_state.json"
+
+    def _runtime_snapshot_path(self) -> Path:
+        return self.dir_path / "control_runtime_state.json"
+
+    def _load_json(self, path: Path) -> dict[str, Any] | None:
+        self._ensure_dir()
+        if not path.exists():
+            return None
+
+        try:
+            with path.open(encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, json.JSONDecodeError) as exc:
+            self._warn(f"Ignoring unreadable persistence file {path}: {exc}")
+            return None
+
+        if not isinstance(payload, dict):
+            self._warn(
+                f"Ignoring persistence file {path}: root value must be a mapping"
             )
-            """
-        )
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS signal_history_samples (
-                history_key TEXT NOT NULL,
-                recorded_at TEXT NOT NULL,
-                value REAL NOT NULL,
-                PRIMARY KEY (history_key, recorded_at)
-            )
-            """
-        )
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS control_runtime_state (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
-                saved_at TEXT NOT NULL,
-                payload TEXT NOT NULL
-            )
-            """
-        )
+            return None
+        return payload
+
+    def _save_json_atomic(self, path: Path, payload: dict[str, Any]) -> None:
+        self._ensure_dir()
+        temp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                dir=path.parent,
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+                delete=False,
+                encoding="utf-8",
+            ) as handle:
+                temp_path = Path(handle.name)
+                json.dump(payload, handle, sort_keys=True)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_path, path)
+            self._fsync_dir(path.parent)
+        except Exception:
+            if temp_path is not None:
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            raise
+
+    def _ensure_dir(self) -> None:
+        self.dir_path.mkdir(parents=True, exist_ok=True)
+
+    def _fsync_dir(self, path: Path) -> None:
+        dir_fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+
+    def _warn(self, message: str) -> None:
+        if self.on_warning is not None:
+            self.on_warning(message)
+
+    def _required_datetime(self, value: object) -> datetime:
+        timestamp = self._optional_datetime(value)
+        if timestamp is None:
+            raise ValueError("expected ISO datetime")
+        return timestamp
+
+    def _optional_datetime(self, value: object) -> datetime | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("expected ISO datetime string")
+        return datetime.fromisoformat(value).astimezone(UTC)
+
+    def _encode_datetime(self, value: datetime | None) -> str | None:
+        if value is None:
+            return None
+        return value.astimezone(UTC).isoformat()

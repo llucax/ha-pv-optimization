@@ -4,6 +4,7 @@ import datetime as dt
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime as StdDatetime
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +26,7 @@ from .models import (
     ThermalPolicyConfig,
     ThermalState,
 )
-from .signals import TimeWeightedSeries
+from .signals import TimedValue, TimeWeightedSeries
 from .storage import RuntimeStateStore
 
 try:
@@ -55,6 +56,9 @@ except ImportError:  # pragma: no cover
         def set_state(
             self, entity_id: str, state: Any, attributes: dict[str, Any]
         ) -> None:
+            return None
+
+        def get_history(self, **kwargs: Any) -> Any:
             return None
 
 
@@ -233,9 +237,8 @@ class LoggingConfig:
 
 
 @dataclass(frozen=True)
-class MaintenanceRuntimeConfig:
-    enabled: bool
-    storage_path: str
+class PersistenceRuntimeConfig:
+    dir: str
 
 
 @dataclass(frozen=True)
@@ -249,6 +252,13 @@ class TimeWeightedMetrics:
     battery_temp_t30_c: float | None
 
 
+@dataclass(frozen=True)
+class SignalHistoryRestoreSpec:
+    history_key: str
+    entity_id: str
+    resume_max_age_s: float
+
+
 class HaPvOptimization(BaseHass):  # type: ignore[misc]
     def initialize(self) -> None:
         self.site_config = None
@@ -257,14 +267,17 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         self.config = self._build_controller_config()
         self.availability = self._build_availability_config()
         self.logging = self._build_logging_config()
-        self.maintenance = self._build_maintenance_runtime_config()
+        self.persistence = self._build_persistence_runtime_config()
         self.device_feed_forward = self._build_device_feed_forward_engine()
         self.controller = PowerControllerCore(self.config)
         self.signal_histories = self._build_signal_histories()
-        self.runtime_store = RuntimeStateStore(Path(self.maintenance.storage_path))
-        self.controller.load_maintenance_state(
-            self.runtime_store.load_maintenance_state()
+        self.runtime_store = RuntimeStateStore(
+            Path(self.persistence.dir),
+            on_warning=self._log_runtime_store_warning,
         )
+        loaded_maintenance_state = self.runtime_store.load_maintenance_state()
+        self.controller.load_maintenance_state(loaded_maintenance_state)
+        self.last_saved_maintenance_snapshot = loaded_maintenance_state
         self._restore_signal_histories()
         self.last_write_monotonic: dict[str, float | None] = {
             "battery": None,
@@ -745,12 +758,13 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             ),
         )
 
-    def _build_maintenance_runtime_config(self) -> MaintenanceRuntimeConfig:
-        return MaintenanceRuntimeConfig(
-            enabled=_as_bool(self.args.get("maintenance_enabled"), True),
-            storage_path=_as_non_empty_str(self.args.get("maintenance_storage_path"))
-            or "/conf/var/noah_controller.sqlite3",
+    def _build_persistence_runtime_config(self) -> PersistenceRuntimeConfig:
+        return PersistenceRuntimeConfig(
+            dir=_as_non_empty_str(self.args.get("persistence_dir")) or "/conf/var",
         )
+
+    def _log_runtime_store_warning(self, message: str) -> None:
+        self.log(message, level="WARNING")
 
     def _build_signal_histories(self) -> dict[str, TimeWeightedSeries]:
         return {
@@ -788,23 +802,110 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         )
 
     def _restore_signal_histories(self) -> None:
+        specs = self._signal_history_restore_specs()
+        if not specs:
+            return
+
         now = dt.datetime.now(dt.UTC)
-        for history_key, samples in self.runtime_store.load_signal_histories().items():
-            series = self.signal_histories.get(history_key)
-            if series is None or not samples:
-                continue
+        history_lookback_s = max(spec.resume_max_age_s for spec in specs) + max(
+            5.0, self.config.control_interval_s
+        )
 
-            latest_timestamp = samples[-1].timestamp
-            max_age_s = _SIGNAL_HISTORY_RESUME_MAX_AGE_S.get(
-                history_key,
-                series.max_history_s,
+        try:
+            history_rows = self.get_history(
+                entity_id=[spec.entity_id for spec in specs],
+                start_time=now - dt.timedelta(seconds=history_lookback_s),
+                minimal_response=True,
+                no_attributes=True,
             )
-            age_s = (now - latest_timestamp).total_seconds()
-            if age_s > max_age_s:
-                self.runtime_store.clear_signal_history(history_key)
+        except Exception as exc:
+            self.log(
+                "Failed to restore signal histories from Home Assistant recorder"
+                f": {exc}",
+                level="WARNING",
+            )
+            return
+
+        if not isinstance(history_rows, list):
+            return
+
+        for spec, entity_history in zip(specs, history_rows, strict=False):
+            samples = self._history_rows_to_timed_values(entity_history)
+            if not samples:
                 continue
 
-            series.load_samples(samples)
+            age_s = max(0.0, (now - samples[-1].timestamp).total_seconds())
+            if age_s > spec.resume_max_age_s:
+                continue
+
+            self.signal_histories[spec.history_key].load_samples(samples)
+
+    def _signal_history_restore_specs(self) -> tuple[SignalHistoryRestoreSpec, ...]:
+        specs = [
+            SignalHistoryRestoreSpec(
+                history_key="consumption",
+                entity_id=self.entities.consumption_entity,
+                resume_max_age_s=_SIGNAL_HISTORY_RESUME_MAX_AGE_S["consumption"],
+            )
+        ]
+        if self.entities.net_consumption_entity is not None:
+            specs.append(
+                SignalHistoryRestoreSpec(
+                    history_key="net",
+                    entity_id=self.entities.net_consumption_entity,
+                    resume_max_age_s=_SIGNAL_HISTORY_RESUME_MAX_AGE_S["net"],
+                )
+            )
+        if self.entities.battery_temperature_entity is not None:
+            specs.append(
+                SignalHistoryRestoreSpec(
+                    history_key="battery_temperature",
+                    entity_id=self.entities.battery_temperature_entity,
+                    resume_max_age_s=_SIGNAL_HISTORY_RESUME_MAX_AGE_S[
+                        "battery_temperature"
+                    ],
+                )
+            )
+        return tuple(specs)
+
+    def _history_rows_to_timed_values(self, rows: object) -> tuple[TimedValue, ...]:
+        if not isinstance(rows, list):
+            return ()
+
+        samples: list[TimedValue] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            timestamp = self._history_timestamp(
+                row.get("last_changed") or row.get("last_updated")
+            )
+            value = _as_float(row.get("state"))
+            if timestamp is None or value is None:
+                continue
+            samples.append(TimedValue(timestamp=timestamp, value=value))
+
+        if not samples:
+            return ()
+
+        samples.sort(key=lambda sample: sample.timestamp)
+        return tuple(samples)
+
+    def _history_timestamp(self, value: object) -> dt.datetime | None:
+        if value is None:
+            return None
+        if isinstance(value, StdDatetime):
+            if value.tzinfo is None:
+                return value.replace(tzinfo=dt.UTC)
+            return value.astimezone(dt.UTC)
+        if not isinstance(value, str):
+            return None
+        try:
+            timestamp = dt.datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        if timestamp.tzinfo is None:
+            return timestamp.replace(tzinfo=dt.UTC)
+        return timestamp.astimezone(dt.UTC)
 
     def _restore_runtime_state(self) -> None:
         loaded_snapshot = self.runtime_store.load_runtime_snapshot()
@@ -976,12 +1077,6 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
     ) -> None:
         series = self.signal_histories[history_key]
         series.update(timestamp, value)
-        self.runtime_store.save_signal_sample(
-            history_key,
-            timestamp,
-            value,
-            max_history_s=series.max_history_s,
-        )
 
     def _on_device_state_change(
         self,
@@ -1276,10 +1371,13 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             saved_at=now,
             payload=self._runtime_snapshot_payload(),
         )
-        if self.maintenance.enabled:
-            self.runtime_store.save_maintenance_state(
-                self.controller.maintenance_state_snapshot()
-            )
+        maintenance_snapshot = self.controller.maintenance_state_snapshot()
+        if (
+            self.config.maintenance_policy.enabled
+            and maintenance_snapshot != self.last_saved_maintenance_snapshot
+        ):
+            self.runtime_store.save_maintenance_state(maintenance_snapshot)
+            self.last_saved_maintenance_snapshot = maintenance_snapshot
 
     def _heartbeat_tick(self, kwargs: dict[str, Any]) -> None:
         self.log(f"Control heartbeat {self.last_control_summary}")

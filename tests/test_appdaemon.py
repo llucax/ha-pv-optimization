@@ -11,15 +11,23 @@ from ha_pv_optimization.storage import RuntimeStateStore
 
 
 class FakeHaPvOptimization(HaPvOptimization):
-    def __init__(self, args: dict[str, Any], state_map: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        args: dict[str, Any],
+        state_map: dict[str, Any],
+        *,
+        history_map: dict[str, list[dict[str, Any]]] | Exception | None = None,
+    ) -> None:
         self.temp_dir = Path(tempfile.mkdtemp(prefix="ha-pvopt-test-"))
         effective_args = dict(args)
         effective_args.setdefault(
-            "maintenance_storage_path",
-            str(self.temp_dir / "noah_controller.sqlite3"),
+            "persistence_dir",
+            str(self.temp_dir / "var"),
         )
         self.args = effective_args
         self.state_map = state_map
+        self.history_map = history_map
+        self.history_requests: list[dict[str, Any]] = []
         self.logs: list[tuple[str, str, dict[str, Any]]] = []
         self.state_updates: list[tuple[str, Any, dict[str, Any]]] = []
         self.service_calls: list[tuple[str, dict[str, Any]]] = []
@@ -51,6 +59,17 @@ class FakeHaPvOptimization(HaPvOptimization):
 
     def set_state(self, entity_id: str, state: Any, attributes: dict[str, Any]) -> None:
         self.state_updates.append((entity_id, state, attributes))
+
+    def get_history(self, **kwargs: Any) -> Any:
+        self.history_requests.append(kwargs)
+        if isinstance(self.history_map, Exception):
+            raise self.history_map
+        if self.history_map is None:
+            return None
+
+        entity_id = kwargs.get("entity_id")
+        entity_ids = [entity_id] if isinstance(entity_id, str) else list(entity_id)
+        return [list(self.history_map.get(item, [])) for item in entity_ids]
 
 
 class _FixedDateTime(datetime):
@@ -105,6 +124,16 @@ def _latest_status_update(
         for update in reversed(app.state_updates)
         if update[0].endswith("_status")
     )
+
+
+def _history_rows_from_samples(samples: tuple[Any, ...]) -> list[dict[str, Any]]:
+    return [
+        {
+            "state": str(sample.value),
+            "last_changed": sample.timestamp,
+        }
+        for sample in samples
+    ]
 
 
 def test_primary_missing_is_not_blocking_when_trim_available(monkeypatch: Any) -> None:
@@ -979,7 +1008,7 @@ def test_maintenance_state_is_persisted(tmp_path: Path) -> None:
             "battery_charging_limit_entity": "number.charging_limit",
             "battery_discharge_limit_entity": "number.discharge_limit",
             "battery_max_output_w": 800,
-            "maintenance_storage_path": str(db_path),
+            "persistence_dir": str(db_path),
             "maintenance_full_charge_threshold_pct": 99,
             "maintenance_full_charge_hold_s": 1800,
             "maintenance_max_age_days": 30,
@@ -1018,7 +1047,7 @@ def test_maintenance_state_is_persisted(tmp_path: Path) -> None:
             "battery_charging_limit_entity": "number.charging_limit",
             "battery_discharge_limit_entity": "number.discharge_limit",
             "battery_max_output_w": 800,
-            "maintenance_storage_path": str(db_path),
+            "persistence_dir": str(db_path),
             "dry_run": True,
         },
         state_map={
@@ -1054,7 +1083,7 @@ def test_signal_histories_are_restored_on_restart(
             "consumption_entity": "sensor.load",
             "battery_temperature_entity": "sensor.battery_temp",
             "battery_power_control_entity": "number.battery_limit",
-            "maintenance_storage_path": str(db_path),
+            "persistence_dir": str(db_path),
             "dry_run": True,
         },
         state_map={
@@ -1095,6 +1124,14 @@ def test_signal_histories_are_restored_on_restart(
 
     restart_at = datetime(2026, 4, 10, 12, 30, tzinfo=UTC)
     expected_metrics = app._time_weighted_metrics(restart_at)
+    history_map = {
+        "sensor.load": _history_rows_from_samples(
+            app.signal_histories["consumption"].samples()
+        ),
+        "sensor.battery_temp": _history_rows_from_samples(
+            app.signal_histories["battery_temperature"].samples()
+        ),
+    }
 
     _FixedDateTime.current = restart_at
     reloaded_app = FakeHaPvOptimization(
@@ -1102,7 +1139,7 @@ def test_signal_histories_are_restored_on_restart(
             "consumption_entity": "sensor.load",
             "battery_temperature_entity": "sensor.battery_temp",
             "battery_power_control_entity": "number.battery_limit",
-            "maintenance_storage_path": str(db_path),
+            "persistence_dir": str(db_path),
             "dry_run": True,
         },
         state_map={
@@ -1113,6 +1150,7 @@ def test_signal_histories_are_restored_on_restart(
                 "attributes": {"min": 0, "max": 800, "step": 50},
             },
         },
+        history_map=history_map,
     )
 
     reloaded_app.initialize()
@@ -1133,7 +1171,7 @@ def test_stale_signal_histories_are_discarded_per_history(
             "consumption_entity": "sensor.load",
             "battery_temperature_entity": "sensor.battery_temp",
             "battery_power_control_entity": "number.battery_limit",
-            "maintenance_storage_path": str(db_path),
+            "persistence_dir": str(db_path),
             "dry_run": True,
         },
         state_map={
@@ -1162,7 +1200,7 @@ def test_stale_signal_histories_are_discarded_per_history(
             "consumption_entity": "sensor.load",
             "battery_temperature_entity": "sensor.battery_temp",
             "battery_power_control_entity": "number.battery_limit",
-            "maintenance_storage_path": str(db_path),
+            "persistence_dir": str(db_path),
             "dry_run": True,
         },
         state_map={
@@ -1173,14 +1211,23 @@ def test_stale_signal_histories_are_discarded_per_history(
                 "attributes": {"min": 0, "max": 800, "step": 50},
             },
         },
+        history_map={
+            "sensor.load": _history_rows_from_samples(
+                app.signal_histories["consumption"].samples()
+            ),
+            "sensor.battery_temp": [
+                {
+                    "state": "10",
+                    "last_changed": datetime(2026, 4, 10, 12, 0, tzinfo=UTC),
+                }
+            ],
+        },
     )
 
     reloaded_app.initialize()
 
     assert reloaded_app.signal_histories["consumption"].sample_count == 1
     assert reloaded_app.signal_histories["battery_temperature"].sample_count == 2
-    persisted_histories = reloaded_app.runtime_store.load_signal_histories()
-    assert persisted_histories["consumption"][-1].value == 300.0
 
 
 def test_actuator_min_write_interval_is_preserved_across_restart(
@@ -1201,7 +1248,7 @@ def test_actuator_min_write_interval_is_preserved_across_restart(
             "battery_max_decrease_per_cycle_w": 500,
             "battery_emergency_max_decrease_per_cycle_w": 500,
             "battery_max_output_w": 800,
-            "maintenance_storage_path": str(db_path),
+            "persistence_dir": str(db_path),
             "dry_run": False,
         },
         state_map={
@@ -1231,7 +1278,7 @@ def test_actuator_min_write_interval_is_preserved_across_restart(
             "battery_max_decrease_per_cycle_w": 500,
             "battery_emergency_max_decrease_per_cycle_w": 500,
             "battery_max_output_w": 800,
-            "maintenance_storage_path": str(db_path),
+            "persistence_dir": str(db_path),
             "dry_run": False,
         },
         state_map={
@@ -1279,7 +1326,7 @@ def test_soc_rail_retry_window_is_preserved_across_restart(
             "thermal_hot_min_soc_pct": 15,
             "thermal_hot_max_soc_pct": 90,
             "thermal_hot_cap_limit_w": 800,
-            "maintenance_storage_path": str(db_path),
+            "persistence_dir": str(db_path),
             "dry_run": False,
         },
         state_map={
@@ -1325,7 +1372,7 @@ def test_soc_rail_retry_window_is_preserved_across_restart(
             "thermal_hot_min_soc_pct": 15,
             "thermal_hot_max_soc_pct": 90,
             "thermal_hot_cap_limit_w": 800,
-            "maintenance_storage_path": str(db_path),
+            "persistence_dir": str(db_path),
             "dry_run": False,
         },
         state_map={
@@ -1362,18 +1409,6 @@ def test_thermal_clear_hold_is_preserved_across_restart(
     monkeypatch.setattr(appdaemon_module.dt, "datetime", _FixedDateTime)
     db_path = tmp_path / "var" / "runtime.sqlite3"
     store = RuntimeStateStore(db_path)
-    store.save_signal_sample(
-        "battery_temperature",
-        datetime(2026, 4, 10, 11, 31, tzinfo=UTC),
-        32.0,
-        max_history_s=7200.0,
-    )
-    store.save_signal_sample(
-        "battery_temperature",
-        datetime(2026, 4, 10, 12, 0, tzinfo=UTC),
-        32.0,
-        max_history_s=7200.0,
-    )
     store.save_runtime_snapshot(
         saved_at=datetime(2026, 4, 10, 12, 0, 30, tzinfo=UTC),
         payload={
@@ -1394,7 +1429,7 @@ def test_thermal_clear_hold_is_preserved_across_restart(
             "thermal_hot_enter_t30_c": 35,
             "thermal_hot_exit_t30_c": 33,
             "thermal_hot_exit_hold_s": 60,
-            "maintenance_storage_path": str(db_path),
+            "persistence_dir": str(db_path),
             "dry_run": True,
         },
         state_map={
@@ -1404,6 +1439,18 @@ def test_thermal_clear_hold_is_preserved_across_restart(
                 "state": "100",
                 "attributes": {"min": 0, "max": 800, "step": 50},
             },
+        },
+        history_map={
+            "sensor.battery_temp": [
+                {
+                    "state": "32",
+                    "last_changed": datetime(2026, 4, 10, 11, 31, tzinfo=UTC),
+                },
+                {
+                    "state": "32",
+                    "last_changed": datetime(2026, 4, 10, 12, 0, tzinfo=UTC),
+                },
+            ]
         },
     )
 
@@ -1446,7 +1493,7 @@ def test_device_feed_forward_state_is_preserved_across_restart(
     app = FakeHaPvOptimization(
         args={
             "site_config_path": str(site_config_path),
-            "maintenance_storage_path": str(db_path),
+            "persistence_dir": str(db_path),
             "dry_run": True,
         },
         state_map={
@@ -1474,7 +1521,7 @@ def test_device_feed_forward_state_is_preserved_across_restart(
     reloaded_app = FakeHaPvOptimization(
         args={
             "site_config_path": str(site_config_path),
-            "maintenance_storage_path": str(db_path),
+            "persistence_dir": str(db_path),
             "dry_run": True,
         },
         state_map={
