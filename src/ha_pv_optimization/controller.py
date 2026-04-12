@@ -827,7 +827,6 @@ class PowerControllerCore:
                 if self.maintenance_full_charge_elapsed_s >= policy.full_charge_hold_s:
                     self.last_full_charge_at = inputs.timestamp
                     self.maintenance_active = False
-                    self.maintenance_full_charge_elapsed_s = 0.0
                     return False, "completed"
                 return True, "holding_full_charge"
 

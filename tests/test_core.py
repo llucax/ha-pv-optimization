@@ -519,6 +519,38 @@ def test_maintenance_completes_after_full_charge_hold() -> None:
     assert result.maintenance_due is False
     assert result.maintenance_reason == "completed"
     assert result.last_full_charge_at == start
+    assert result.maintenance_full_charge_elapsed_s == 1800.0
+
+
+def test_maintenance_start_resets_elapsed_timer() -> None:
+    controller = _single_actuator_controller(control_interval_s=30.0)
+    now = datetime(2026, 4, 4, 12, 0, tzinfo=UTC)
+    controller.load_maintenance_state(
+        MaintenanceStateSnapshot(
+            maintenance_active=False,
+            full_charge_elapsed_s=1800.0,
+            last_full_charge_at=datetime(2026, 3, 1, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    result = controller.step(
+        ControllerInputs(
+            timestamp=now,
+            consumption_w=300.0,
+            primary_actuator=ActuatorInputs(
+                current_limit_w=200.0,
+                seconds_since_last_write=999.0,
+            ),
+            soc_pct=80.0,
+            battery_temp_t30_c=20.0,
+            battery_temp_t5_c=20.0,
+        )
+    )
+
+    assert result.maintenance_active is True
+    assert result.maintenance_due is True
+    assert result.maintenance_reason == "started"
+    assert result.maintenance_full_charge_elapsed_s == 0.0
 
 
 def test_maintenance_waits_for_allowed_thermal_window() -> None:

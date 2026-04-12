@@ -259,7 +259,7 @@ Maintenance diagnostics are published in the status entity via:
 - `maintenance_active`
 - `maintenance_due`
 - `maintenance_reason`
-- `maintenance_full_charge_elapsed_s`
+- `maintenance_full_charge_elapsed_s` - current hold timer while active, or the last completed hold duration after a successful cycle; it resets when a new maintenance cycle starts.
 - `last_full_charge_at`
 
 ## Availability-aware warning behavior
