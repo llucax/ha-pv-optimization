@@ -7,6 +7,7 @@ from typing import Any
 
 import ha_pv_optimization.appdaemon as appdaemon_module
 from ha_pv_optimization.appdaemon import HaPvOptimization
+from ha_pv_optimization.models import MaintenanceStateSnapshot
 from ha_pv_optimization.storage import RuntimeStateStore
 
 
@@ -102,6 +103,14 @@ def _messages_for_log(
 def _heartbeat_messages(app: FakeHaPvOptimization) -> list[str]:
     return [
         message for message in _info_messages(app) if "Control heartbeat" in message
+    ]
+
+
+def _maintenance_messages(app: FakeHaPvOptimization) -> list[str]:
+    return [
+        message
+        for message in _info_messages(app)
+        if "Maintenance state changed" in message or "control targets" in message
     ]
 
 
@@ -1070,6 +1079,115 @@ def test_maintenance_state_is_persisted(tmp_path: Path) -> None:
 
     reloaded_app.initialize()
     assert reloaded_app.controller.maintenance_active is True
+
+
+def test_maintenance_waiting_log_includes_condition_details() -> None:
+    app = FakeHaPvOptimization(
+        args={
+            "consumption_entity": "sensor.load",
+            "battery_power_control_entity": "number.battery_limit",
+            "battery_temperature_entity": "sensor.battery_temp",
+            "battery_charging_limit_entity": "number.charging_limit",
+            "battery_discharge_limit_entity": "number.discharge_limit",
+            "battery_max_output_w": 800,
+            "maintenance_full_charge_threshold_pct": 99,
+            "maintenance_full_charge_hold_s": 1800,
+            "maintenance_max_age_days": 30,
+            "maintenance_start_min_t30_c": 10,
+            "maintenance_start_max_t30_c": 35,
+            "maintenance_max_soc_pct": 100,
+            "maintenance_path_cap_w": 0,
+            "dry_run": True,
+        },
+        state_map={
+            "sensor.load": "200",
+            "sensor.battery_temp": "5",
+            "number.battery_limit": {
+                "state": "0",
+                "attributes": {"min": 0, "max": 800, "step": 50},
+            },
+            "number.discharge_limit": {
+                "state": "15",
+                "attributes": {"min": 0, "max": 30, "step": 1},
+            },
+            "number.charging_limit": {
+                "state": "95",
+                "attributes": {"min": 70, "max": 100, "step": 1},
+            },
+        },
+    )
+
+    app.initialize()
+    app._control_tick({})
+
+    message = next(
+        message
+        for message in _maintenance_messages(app)
+        if "control targets" in message
+    )
+    assert "maintenance_reason=waiting_conditions" in message
+    assert (
+        "maintenance_conditions=met:thermal_normal,t30_present;"
+        "unmet:t30_below_min;t30:5.0C;window:10-35C"
+    ) in message
+
+
+def test_maintenance_paused_log_includes_condition_details() -> None:
+    app = FakeHaPvOptimization(
+        args={
+            "consumption_entity": "sensor.load",
+            "battery_power_control_entity": "number.battery_limit",
+            "battery_temperature_entity": "sensor.battery_temp",
+            "battery_charging_limit_entity": "number.charging_limit",
+            "battery_discharge_limit_entity": "number.discharge_limit",
+            "battery_max_output_w": 800,
+            "maintenance_full_charge_threshold_pct": 99,
+            "maintenance_full_charge_hold_s": 1800,
+            "maintenance_max_age_days": 30,
+            "maintenance_start_min_t30_c": 10,
+            "maintenance_start_max_t30_c": 35,
+            "maintenance_max_soc_pct": 100,
+            "maintenance_path_cap_w": 0,
+            "dry_run": True,
+        },
+        state_map={
+            "sensor.load": "200",
+            "sensor.battery_temp": "5",
+            "number.battery_limit": {
+                "state": "0",
+                "attributes": {"min": 0, "max": 800, "step": 50},
+            },
+            "number.discharge_limit": {
+                "state": "15",
+                "attributes": {"min": 0, "max": 30, "step": 1},
+            },
+            "number.charging_limit": {
+                "state": "95",
+                "attributes": {"min": 70, "max": 100, "step": 1},
+            },
+        },
+    )
+
+    app.initialize()
+    app.controller.load_maintenance_state(
+        MaintenanceStateSnapshot(
+            maintenance_active=True,
+            full_charge_elapsed_s=0.0,
+            last_full_charge_at=None,
+        )
+    )
+    app._control_tick({})
+
+    message = next(
+        message
+        for message in _maintenance_messages(app)
+        if "Maintenance state changed" in message
+    )
+    assert "reason=paused_conditions" in message
+    assert (
+        "maintenance_conditions=met:thermal_normal,t30_present;"
+        "unmet:t30_below_min;t30:5.0C;window:10-35C"
+    ) in message
 
 
 def test_signal_histories_are_restored_on_restart(

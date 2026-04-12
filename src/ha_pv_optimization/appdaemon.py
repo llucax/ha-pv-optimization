@@ -1280,6 +1280,15 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             current_charging_limit_pct=charging_limit_pct,
             thermal_state=result.thermal_state,
         )
+        maintenance_conditions = self._maintenance_condition_summary(
+            result,
+            inputs=inputs,
+        )
+        maintenance_conditions_text = (
+            f" maintenance_conditions={maintenance_conditions}"
+            if maintenance_conditions is not None
+            else ""
+        )
 
         if result.thermal_state != self.last_reported_thermal_state:
             self._emit_thermal_log(
@@ -1304,10 +1313,16 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
                 f" active={result.maintenance_active}"
                 f" due={result.maintenance_due}"
                 f" reason={result.maintenance_reason}"
+                f"{maintenance_conditions_text}"
                 f" hold_elapsed={int(result.maintenance_full_charge_elapsed_s)}s"
                 f" last_full_charge_at={result.last_full_charge_at}"
             )
 
+        control_summary = self._control_summary(
+            result,
+            degraded_mode=degraded_mode,
+            maintenance_conditions=maintenance_conditions,
+        )
         self.last_thermal_summary = (
             f"state={result.thermal_state}"
             f" reason={result.thermal_reason}"
@@ -1318,6 +1333,7 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             f" maintenance_active={result.maintenance_active}"
             f" maintenance_due={result.maintenance_due}"
             f" maintenance_reason={result.maintenance_reason}"
+            f"{maintenance_conditions_text}"
             f" desired_min_soc={int(result.desired_min_soc_pct)}%"
             f" desired_max_soc={int(result.desired_max_soc_pct)}%"
             f" battery_cap_limit={int(result.battery_cap_limit_w)}W"
@@ -1337,12 +1353,8 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
 
         if result.action in {"write", "dry_run"}:
             action_label = "Dry-run" if result.action == "dry_run" else "Updated"
-            summary = self._control_summary(result, degraded_mode=degraded_mode)
-            self.log(f"{action_label} control targets {summary}")
-        self.last_control_summary = self._control_summary(
-            result,
-            degraded_mode=degraded_mode,
-        )
+            self.log(f"{action_label} control targets {control_summary}")
+        self.last_control_summary = control_summary
 
         self._emit_log(
             "Control cycle"
@@ -1350,7 +1362,7 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             f" consumption={result.effective_consumption_w:.1f}W"
             f" smoothed={result.smoothed_consumption_w:.1f}W"
             f" net={result.raw_net_consumption_w}"
-            f" {self._control_summary(result, degraded_mode=degraded_mode)}",
+            f" {control_summary}",
             level=self.logging.control_cycle_log_level,
             log_name=self.logging.control_cycle_log,
         )
@@ -1395,10 +1407,16 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
         result: ControllerResult,
         *,
         degraded_mode: str,
+        maintenance_conditions: str | None,
     ) -> str:
         effective_text = "unknown"
         if result.effective_target_w is not None:
             effective_text = f"{int(result.effective_target_w)}W"
+        maintenance_conditions_text = ""
+        if maintenance_conditions is not None:
+            maintenance_conditions_text = (
+                f" maintenance_conditions={maintenance_conditions}"
+            )
         return (
             f"requested={int(result.requested_target_w)}W"
             f" planned={int(result.target_limit_w)}W"
@@ -1417,12 +1435,50 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
             f" maintenance_active={result.maintenance_active}"
             f" maintenance_due={result.maintenance_due}"
             f" maintenance_reason={result.maintenance_reason}"
+            f"{maintenance_conditions_text}"
             f" current={int(result.current_limit_w)}W"
             f" degraded={degraded_mode}"
             f" battery={self._format_actuator_summary(result.primary_actuator)}"
             f" inverter={self._format_trim_summary(result.trim_actuator)}"
             f" reason={result.reason}"
         )
+
+    def _maintenance_condition_summary(
+        self,
+        result: ControllerResult,
+        *,
+        inputs: ControllerInputs,
+    ) -> str | None:
+        if not (result.maintenance_due or result.maintenance_active):
+            return None
+
+        policy = self.config.maintenance_policy
+        met: list[str] = []
+        unmet: list[str] = []
+
+        if result.thermal_state == ThermalState.NORMAL:
+            met.append("thermal_normal")
+        else:
+            unmet.append(f"thermal_{result.thermal_state.value.lower()}")
+
+        t30_c = inputs.battery_temp_t30_c
+        if t30_c is None:
+            unmet.append("t30_missing")
+            t30_text = "missing"
+        else:
+            met.append("t30_present")
+            t30_text = f"{t30_c:.1f}C"
+            if policy.start_min_t30_c <= t30_c <= policy.start_max_t30_c:
+                met.append("t30_in_window")
+            elif t30_c < policy.start_min_t30_c:
+                unmet.append("t30_below_min")
+            else:
+                unmet.append("t30_above_max")
+
+        met_text = ",".join(met) if met else "none"
+        unmet_text = ",".join(unmet) if unmet else "none"
+        window_text = f"{policy.start_min_t30_c:g}-{policy.start_max_t30_c:g}C"
+        return f"met:{met_text};unmet:{unmet_text};t30:{t30_text};window:{window_text}"
 
     def _effective_degraded_state(
         self,
