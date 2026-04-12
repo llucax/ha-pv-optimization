@@ -221,6 +221,15 @@ class PowerControllerCore:
             reason_parts.append("maintenance_active")
 
         desired_path_cap_w = clamp(requested_target_w, 0.0, allowed_path_cap_w)
+        full_soc_inverter_pass_through_active = (
+            self._full_soc_inverter_pass_through_active(
+                inputs,
+                thermal_state=thermal_state,
+                desired_max_soc_pct=desired_max_soc_pct,
+            )
+        )
+        if full_soc_inverter_pass_through_active:
+            reason_parts.append("full_soc_inverter_pass_through")
 
         battery_result = self._build_actuator_result(
             config=self.config.battery_actuator,
@@ -234,7 +243,11 @@ class PowerControllerCore:
             inverter_result = self._build_actuator_result(
                 config=self.config.inverter_actuator,
                 inputs=inputs.inverter_actuator,
-                desired_target_w=desired_path_cap_w,
+                desired_target_w=(
+                    inverter_allowed_max_output_w
+                    if full_soc_inverter_pass_through_active
+                    else desired_path_cap_w
+                ),
                 allowed_max_output_w=inverter_allowed_max_output_w,
                 export_fast=False,
             )
@@ -470,6 +483,26 @@ class PowerControllerCore:
         if self.config.inverter_actuator is None or inputs.inverter_actuator is None:
             return 0.0
         return self.config.inverter_actuator.max_output_w
+
+    def _full_soc_inverter_pass_through_active(
+        self,
+        inputs: ControllerInputs,
+        *,
+        thermal_state: ThermalState,
+        desired_max_soc_pct: float,
+    ) -> bool:
+        if not self.config.allow_full_soc_inverter_pass_through:
+            return False
+        if thermal_state != ThermalState.NORMAL:
+            return False
+        if inputs.soc_pct is None or inputs.soc_pct < desired_max_soc_pct:
+            return False
+        if inputs.battery_actuator is None:
+            return False
+        return bool(
+            self.config.inverter_actuator is not None
+            and inputs.inverter_actuator is not None
+        )
 
     def _build_actuator_result(
         self,

@@ -101,6 +101,7 @@ The current aggregate controller is command-state based. It uses the time-weight
 - `visible_oversupply_one_sample_w` - immediate severe oversupply threshold based on visible load minus inverter output; default `-120`.
 - `visible_oversupply_two_sample_w` - moderate oversupply threshold that must persist twice; default `-60`.
 - `visible_oversupply_max_cut_w` - maximum cut used by the oversupply safeguard; default `500`.
+- `allow_full_soc_inverter_pass_through` - when `true`, and the controller is in `NORMAL` thermal state with both actuators available, reaching the active max-SOC rail keeps the battery target unchanged but opens the inverter actuator to its allowed max so battery-side pass-through is not blocked; default `false`.
 
 Legacy EMA/net-correction knobs remain in the config surface for compatibility with older configs and the preview metrics, but the current Stage 8 aggregate loop primarily relies on the command-state/event-path fields above plus the time-weighted metrics from the wrapper.
 
@@ -294,6 +295,7 @@ The generic example currently includes these keys:
 - `fast_export_threshold_w`
 - `import_correction_gain`
 - `export_correction_gain`
+- `allow_full_soc_inverter_pass_through`
 - `battery_min_change_w`
 - `battery_min_write_interval_s`
 - `battery_max_increase_per_cycle_w`

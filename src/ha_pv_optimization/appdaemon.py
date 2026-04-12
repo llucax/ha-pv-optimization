@@ -539,6 +539,10 @@ class HaPvOptimization(BaseHass):  # type: ignore[misc]
                 "visible_oversupply_max_cut_w",
                 500.0,
             ),
+            allow_full_soc_inverter_pass_through=_as_bool(
+                self.args.get("allow_full_soc_inverter_pass_through"),
+                False,
+            ),
             thermal_policy=ThermalPolicyConfig(
                 normal_min_soc_pct=self._get_float("thermal_normal_min_soc_pct", 15.0),
                 normal_max_soc_pct=self._get_float("thermal_normal_max_soc_pct", 95.0),

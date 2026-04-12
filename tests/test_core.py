@@ -331,6 +331,220 @@ def test_path_cap_is_clamped_by_battery_before_inverter_minimum_target() -> None
     assert result.degraded_mode == "nominal"
 
 
+def test_full_soc_pass_through_opens_inverter_while_battery_stays_at_zero() -> None:
+    controller = PowerControllerCore(
+        ControllerConfig(
+            primary_actuator=ActuatorConfig(
+                label="battery",
+                max_output_w=800.0,
+                power_step_w=10.0,
+                min_change_w=10.0,
+                min_write_interval_s=0.0,
+                max_increase_per_cycle_w=800.0,
+                max_decrease_per_cycle_w=800.0,
+                emergency_max_decrease_per_cycle_w=800.0,
+            ),
+            trim_actuator=ActuatorConfig(
+                label="inverter",
+                min_output_w=30.0,
+                max_output_w=800.0,
+                power_step_w=10.0,
+                min_change_w=10.0,
+                min_write_interval_s=0.0,
+                max_increase_per_cycle_w=800.0,
+                max_decrease_per_cycle_w=800.0,
+                emergency_max_decrease_per_cycle_w=800.0,
+            ),
+            consumption_ema_tau_s=1.0,
+            allow_full_soc_inverter_pass_through=True,
+        )
+    )
+    result = controller.step(
+        ControllerInputs(
+            consumption_w=0.0,
+            soc_pct=95.0,
+            primary_actuator=ActuatorInputs(
+                current_limit_w=0.0,
+                seconds_since_last_write=999.0,
+            ),
+            trim_actuator=ActuatorInputs(
+                current_limit_w=70.0,
+                seconds_since_last_write=999.0,
+            ),
+        )
+    )
+
+    assert result.target_limit_w == 0.0
+    assert result.primary_actuator.target_limit_w == 0.0
+    assert result.trim_actuator is not None
+    assert result.trim_actuator.target_limit_w == 800.0
+    assert result.trim_actuator.reason == "write"
+    assert "full_soc_inverter_pass_through" in result.reason
+
+
+def test_full_soc_pass_through_stays_disabled_without_battery_control() -> None:
+    controller = PowerControllerCore(
+        ControllerConfig(
+            primary_actuator=ActuatorConfig(
+                label="battery",
+                max_output_w=800.0,
+                min_write_interval_s=0.0,
+            ),
+            trim_actuator=ActuatorConfig(
+                label="inverter",
+                min_output_w=30.0,
+                max_output_w=800.0,
+                power_step_w=10.0,
+                min_change_w=10.0,
+                min_write_interval_s=0.0,
+                max_increase_per_cycle_w=800.0,
+                max_decrease_per_cycle_w=800.0,
+                emergency_max_decrease_per_cycle_w=800.0,
+            ),
+            consumption_ema_tau_s=1.0,
+            allow_full_soc_inverter_pass_through=True,
+        )
+    )
+    result = controller.step(
+        ControllerInputs(
+            consumption_w=0.0,
+            soc_pct=95.0,
+            primary_actuator=None,
+            trim_actuator=ActuatorInputs(
+                current_limit_w=30.0,
+                seconds_since_last_write=999.0,
+            ),
+        )
+    )
+
+    assert result.trim_actuator is not None
+    assert result.trim_actuator.target_limit_w == 30.0
+    assert "full_soc_inverter_pass_through" not in result.reason
+
+
+def test_full_soc_pass_through_stays_disabled_outside_normal_thermal_state() -> None:
+    controller = PowerControllerCore(
+        ControllerConfig(
+            primary_actuator=ActuatorConfig(
+                label="battery",
+                max_output_w=800.0,
+                power_step_w=10.0,
+                min_change_w=10.0,
+                min_write_interval_s=0.0,
+                max_increase_per_cycle_w=800.0,
+                max_decrease_per_cycle_w=800.0,
+                emergency_max_decrease_per_cycle_w=800.0,
+            ),
+            trim_actuator=ActuatorConfig(
+                label="inverter",
+                min_output_w=30.0,
+                max_output_w=800.0,
+                power_step_w=10.0,
+                min_change_w=10.0,
+                min_write_interval_s=0.0,
+                max_increase_per_cycle_w=800.0,
+                max_decrease_per_cycle_w=800.0,
+                emergency_max_decrease_per_cycle_w=800.0,
+            ),
+            consumption_ema_tau_s=1.0,
+            allow_full_soc_inverter_pass_through=True,
+            thermal_policy=ThermalPolicyConfig(
+                hot_enter_t30_c=35.0,
+                hot_exit_t30_c=33.0,
+                hot_exit_hold_s=60.0,
+                hot_min_soc_pct=15.0,
+                hot_max_soc_pct=90.0,
+                hot_cap_limit_w=800.0,
+            ),
+        )
+    )
+    result = controller.step(
+        ControllerInputs(
+            consumption_w=0.0,
+            soc_pct=90.0,
+            primary_actuator=ActuatorInputs(
+                current_limit_w=0.0,
+                seconds_since_last_write=999.0,
+            ),
+            trim_actuator=ActuatorInputs(
+                current_limit_w=30.0,
+                seconds_since_last_write=999.0,
+            ),
+            battery_temp_t30_c=36.0,
+            battery_temp_t5_c=30.0,
+        )
+    )
+
+    assert result.thermal_state == ThermalState.HOT
+    assert result.trim_actuator is not None
+    assert result.trim_actuator.target_limit_w == 30.0
+    assert "full_soc_inverter_pass_through" not in result.reason
+
+
+def test_full_soc_pass_through_still_opens_inverter_during_maintenance_hold() -> None:
+    controller = PowerControllerCore(
+        ControllerConfig(
+            primary_actuator=ActuatorConfig(
+                label="battery",
+                max_output_w=800.0,
+                power_step_w=10.0,
+                min_change_w=10.0,
+                min_write_interval_s=0.0,
+                max_increase_per_cycle_w=800.0,
+                max_decrease_per_cycle_w=800.0,
+                emergency_max_decrease_per_cycle_w=800.0,
+            ),
+            trim_actuator=ActuatorConfig(
+                label="inverter",
+                min_output_w=30.0,
+                max_output_w=800.0,
+                power_step_w=10.0,
+                min_change_w=10.0,
+                min_write_interval_s=0.0,
+                max_increase_per_cycle_w=800.0,
+                max_decrease_per_cycle_w=800.0,
+                emergency_max_decrease_per_cycle_w=800.0,
+            ),
+            control_interval_s=30.0,
+            consumption_ema_tau_s=1.0,
+            allow_full_soc_inverter_pass_through=True,
+        )
+    )
+    controller.load_maintenance_state(
+        MaintenanceStateSnapshot(
+            maintenance_active=True,
+            full_charge_elapsed_s=0.0,
+            last_full_charge_at=None,
+        )
+    )
+
+    result = controller.step(
+        ControllerInputs(
+            timestamp=datetime(2026, 4, 4, 12, 0, tzinfo=UTC),
+            consumption_w=0.0,
+            soc_pct=100.0,
+            primary_actuator=ActuatorInputs(
+                current_limit_w=0.0,
+                seconds_since_last_write=999.0,
+            ),
+            trim_actuator=ActuatorInputs(
+                current_limit_w=100.0,
+                seconds_since_last_write=999.0,
+            ),
+            battery_temp_t30_c=20.0,
+            battery_temp_t5_c=20.0,
+        )
+    )
+
+    assert result.maintenance_active is True
+    assert result.maintenance_reason == "holding_full_charge"
+    assert result.target_limit_w == 0.0
+    assert result.primary_actuator.target_limit_w == 0.0
+    assert result.trim_actuator is not None
+    assert result.trim_actuator.target_limit_w == 800.0
+    assert "full_soc_inverter_pass_through" in result.reason
+
+
 def test_device_feed_forward_bias_is_added_to_requested_target() -> None:
     controller = _single_actuator_controller(
         consumption_ema_tau_s=1.0,

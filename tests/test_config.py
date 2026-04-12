@@ -29,6 +29,7 @@ def test_load_site_config_and_flatten_to_appdaemon_args(tmp_path: Path) -> None:
         "  min_output_w: 30\n"
         "control:\n"
         "  baseline_load_w: 10\n"
+        "  allow_full_soc_inverter_pass_through: true\n"
         "thermal:\n"
         "  normal_min_soc_pct: 15\n"
         "devices:\n"
@@ -51,7 +52,9 @@ def test_load_site_config_and_flatten_to_appdaemon_args(tmp_path: Path) -> None:
     assert flattened["battery_heating_entity"] == "binary_sensor.noah_heating"
     assert flattened["inverter_power_control_entity"] == "number.ez1_limit"
     assert flattened["baseline_load_w"] == 10.0
+    assert flattened["allow_full_soc_inverter_pass_through"] is True
     assert controller_config.battery_actuator.max_output_w == 800.0
+    assert controller_config.allow_full_soc_inverter_pass_through is True
     assert controller_config.thermal_policy.normal_min_soc_pct == 15.0
     assert site_config.devices["microwave"].entity_id == "sensor.outlet_microwave_power"
     assert controller_config.inverter_actuator is not None

@@ -189,12 +189,17 @@ class ControlSiteConfig:
     visible_oversupply_one_sample_w: float = -120.0
     visible_oversupply_two_sample_w: float = -60.0
     visible_oversupply_max_cut_w: float = 500.0
+    allow_full_soc_inverter_pass_through: bool = False
 
     @classmethod
     def from_mapping(cls, mapping: dict[str, Any] | None) -> ControlSiteConfig:
         if mapping is None:
             return cls()
         net_export_negative = _optional_bool(mapping, "net_export_negative")
+        allow_full_soc_inverter_pass_through = _optional_bool(
+            mapping,
+            "allow_full_soc_inverter_pass_through",
+        )
         return cls(
             baseline_load_w=_with_default(
                 _optional_float(mapping, "baseline_load_w"), 0.0
@@ -306,6 +311,10 @@ class ControlSiteConfig:
             visible_oversupply_max_cut_w=_with_default(
                 _optional_float(mapping, "visible_oversupply_max_cut_w"),
                 500.0,
+            ),
+            allow_full_soc_inverter_pass_through=_with_default(
+                allow_full_soc_inverter_pass_through,
+                False,
             ),
         )
 
@@ -773,6 +782,9 @@ def site_config_to_appdaemon_args(site_config: SiteConfig) -> dict[str, Any]:
         "visible_oversupply_max_cut_w": (
             site_config.control.visible_oversupply_max_cut_w
         ),
+        "allow_full_soc_inverter_pass_through": (
+            site_config.control.allow_full_soc_inverter_pass_through
+        ),
         "persistence_dir": site_config.persistence.dir,
         "soc_stop_buffer_pct": site_config.battery_policy.soc_stop_buffer_pct,
         "soc_full_power_buffer_pct": (
@@ -955,6 +967,9 @@ def controller_config_from_site_config(
         visible_oversupply_one_sample_w=site_config.control.visible_oversupply_one_sample_w,
         visible_oversupply_two_sample_w=site_config.control.visible_oversupply_two_sample_w,
         visible_oversupply_max_cut_w=site_config.control.visible_oversupply_max_cut_w,
+        allow_full_soc_inverter_pass_through=(
+            site_config.control.allow_full_soc_inverter_pass_through
+        ),
         thermal_policy=ThermalPolicyConfig(
             normal_min_soc_pct=site_config.thermal.normal_min_soc_pct,
             normal_max_soc_pct=site_config.thermal.normal_max_soc_pct,

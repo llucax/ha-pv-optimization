@@ -107,6 +107,7 @@ class ControllerConfig:
     visible_oversupply_one_sample_w: float = -120.0
     visible_oversupply_two_sample_w: float = -60.0
     visible_oversupply_max_cut_w: float = 500.0
+    allow_full_soc_inverter_pass_through: bool = False
 
     @property
     def battery_actuator(self) -> ActuatorConfig:
